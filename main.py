@@ -13,7 +13,7 @@ app = FastAPI(title="AI Music Generator (Suno API)")
 # ENV
 # =========================
 SUNO_API_URL = os.getenv("SUNO_API_URL", "https://api.sunoapi.org/api/v1/generate")
-SUNO_STATUS_URL = os.getenv("SUNO_STATUS_URL", "https://api.sunoapi.org/api/v1/status")  # optional
+SUNO_STATUS_URL = os.getenv("SUNO_STATUS_URL", "https://api.sunoapi.org/api/v1/generate/status")  # optional
 SUNO_TOKEN = os.getenv("SUNO_TOKEN")
 
 # Base URL APP INI (musik-android)
@@ -44,8 +44,8 @@ class GenerateRequest(BaseModel):
     # customMode True biasanya untuk detail lebih
     customMode: bool = False
 
-    # model harus sesuai API, biasanya "V3_5"
-    model: str = "V3_5"
+    # model harus sesuai API, biasanya "V4_5"
+    model: str = "V4_5"
 
     # lirik (opsional)
     lyrics: Optional[str] = None
@@ -188,6 +188,7 @@ def music_status(taskId: str):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 
