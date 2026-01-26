@@ -101,6 +101,21 @@ def generate_full_song(data: GenerateRequest):
         "task_id": task_id,
         "status": "generated"
     }
+# =========================
+# DOWNLOAD MP3
+# =========================
+@app.get("/generate/download/{task_id}")
+def download_mp3(task_id: str):
+    path = f"{GENERATED_DIR}/{task_id}.mp3"
+
+    if not os.path.exists(path):
+        raise HTTPException(404, "File tidak ditemukan")
+
+    return FileResponse(
+        path,
+        media_type="audio/mpeg",
+        filename=f"{task_id}.mp3"
+    )
 
 import os, psycopg2
 
@@ -119,6 +134,7 @@ def db_all():
     cur.close()
     conn.close()
     return rows
+
 
 
 
