@@ -44,7 +44,7 @@ class GenerateRequest(BaseModel):
     instrumental: bool = False
     model: str = "V4_5"
 
-    negativeTags: Optional[True] = None
+    negativeTags: Optional[str] = None
 
     # kalau mau lirik custom (opsional)
     lyrics: Optional[str] = None
@@ -260,5 +260,6 @@ def music_wait(taskId: str, delay: int = 3):
             return {"taskId": taskId, "status": "error", "message": str(e)}
 
         time.sleep(delay)
+
 
 
