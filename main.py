@@ -162,9 +162,9 @@ def generate_status(task_id: str):
 
     return {"status": "processing"}
 
-# =====================================================
+# =========================
 # DOWNLOAD MP3
-# =====================================================
+# =========================
 @app.get("/generate/download/{task_id}")
 def download_mp3(task_id: str):
     path = f"{GENERATED_DIR}/{task_id}.mp3"
@@ -175,12 +175,20 @@ def download_mp3(task_id: str):
     return FileResponse(
         path,
         media_type="audio/mpeg",
-        filename=f"{task_id}.mp3",download(task_id: str):
-    
+        filename=f"{task_id}.mp3"
+    )
+
+
+# =========================
+# METADATA LAGU
+# =========================
+@app.get("/generate/metadata/{task_id}")
+def get_metadata(task_id: str):
+    return {
         "title": "Judul Lagu",
         "lyrics": "Ini lirik lagu...\nBaris kedua...\nBaris ketiga..."
+    }
 
-    )
 
 import os, psycopg2
 
@@ -199,6 +207,7 @@ def db_all():
     cur.close()
     conn.close()
     return rows
+
 
 
 
