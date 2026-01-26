@@ -258,3 +258,21 @@ def musik_status(taskId: str):
         "audio_url": audio_url,
         "message": "Callback sudah masuk tapi belum complete. Tunggu sebentar...",
     }
+
+import os, psycopg2
+
+def get_conn():
+    return psycopg2.connect(os.environ["DATABASE_URL"])
+@app.get("/db-all")
+def db_all():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT *
+        FROM information_schema.tables
+        WHERE table_schema = 'public';
+    """)
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
