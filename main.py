@@ -51,10 +51,10 @@ os.makedirs(GENERATED_DIR, exist_ok=True)
 # =====================================================
 class GenerateRequest(BaseModel):
     prompt: str
-    tags: Optional[str] = None
+    tags: str | None = None
     custom_mode: bool = False
     instrumental: bool = False
-    model: str = "v4_5"
+    model: str = "V4_5"
 
 # =====================================================
 # HEALTH CHECK
@@ -63,59 +63,142 @@ class GenerateRequest(BaseModel):
 def root():
     return {"status": "ok"}
 
-# =========================
+# =====================================================
 # GENERATE FULL SONG
-# =========================
+# =====================================================
 @app.post("/generate/full-song")
 def generate_full_song(data: GenerateRequest):
-    task_id = uuid.uuid4().hex
-
-    # ====== CONTOH GENERATE (GANTI DENGAN AI ANDA) ======
-    title = f"Lagu tentang {data.prompt[:30]}"
-    lyrics = f"Lirik lagu berdasarkan prompt:\n{data.prompt}"
-    description = data.prompt
-
-    # dummy file MP3
-    mp3_path = f"{GENERATED_DIR}/{task_id}.mp3"
-    with open(mp3_path, "wb") as f:
-        f.write(b"")  # nanti ganti hasil audio asli
-
-    # dummy cover image
-    cover_path = f"{GENERATED_DIR}/{task_id}.jpg"
-    with open(cover_path, "wb") as f:
-        f.write(b"")  # nanti ganti hasil image asli
-
-    # metadata
-    metadata = {
-        "task_id": task_id,
-        "title": title,
-        "lyrics": lyrics,
-        "description": description,
-        "cover_url": f"/generate/cover/{task_id}"
+    payload = {
+        "prompt": data.prompt,
+        "tags": data.tags,
+        "customMode": data.custom_mode,
+        "instrumental": data.instrumental,
+        "model": data.model,
+        "callBackUrl": f"{BASE_URL}/generate/callback",
     }
 
-    with open(f"{GENERATED_DIR}/{task_id}.json", "w", encoding="utf-8") as f:
-        json.dump(metadata, f, ensure_ascii=False)
+    try:
+        r = requests.post(
+            SUNO_API_GENERATE_URL,
+            headers=HEADERS,
+            json=payload,
+            timeout=60,
+        )
+    except requests.RequestException as e:
+        raise HTTPException(502, f"Gagal koneksi ke Suno: {e}")
+
+    if r.status_code != 200:
+        raise HTTPException(r.status_code, r.text)
+
+    res = r.json()
+    if res.get("code") != 200:
+        raise HTTPException(500, res.get("msg", "Generate gagal"))
+
+    return res
+
+# =====================================================
+# CALLBACK SUNO (FULL AKTIF)
+# =====================================================
+@app.post("/generate/callback")
+async def generate_callback(req: Request):
+    payload = await req.json()
+
+    # Validasi callback
+    if payload.get("code") != 200:
+        return {"status": "ignored"}
+
+    data = payload.get("data", {})
+    task_id = data.get("task_id")
+    items = data.get("data", [])
+
+    if not task_id or not items:
+        return {"status": "invalid_payload"}
+
+    item = items[0]
+
+    audio_url = (
+        item.get("audio_url")
+        or item.get("audioUrl")
+        or item.get("audio")
+    )
+
+    if not audio_url:
+        return {"status": "no_audio"}
+
+    mp3_path = f"{GENERATED_DIR}/{task_id}.mp3"
+
+    # Idempotent (aman kalau callback dipanggil ulang)
+    if os.path.exists(mp3_path):
+        return {"status": "already_saved"}
+
+    try:
+        audio_resp = requests.get(audio_url, timeout=60)
+        if audio_resp.status_code != 200:
+            return {"status": "download_failed"}
+
+        with open(mp3_path, "wb") as f:
+            f.write(audio_resp.content)
+
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
     return {
+        "status": "saved",
         "task_id": task_id,
-        "status": "generated"
     }
-# =========================
+
+# =====================================================
+# STATUS (TANPA POLLING SUNO)
+# =====================================================
+@app.get("/generate/status/{task_id}")
+def generate_status(task_id: str):
+    mp3_path = f"{GENERATED_DIR}/{task_id}.mp3"
+
+    if os.path.exists(mp3_path):
+        return {
+            "status": "done",
+            "download_url": f"{BASE_URL}/generate/download/{task_id}",
+        }
+
+    return {"status": "processing"}
+
+# =====================================================
 # DOWNLOAD MP3
-# =========================
+# =====================================================
 @app.get("/generate/download/{task_id}")
 def download_mp3(task_id: str):
     path = f"{GENERATED_DIR}/{task_id}.mp3"
 
     if not os.path.exists(path):
-        raise HTTPException(404, "File tidak ditemukan")
+        raise HTTPException(404, "File belum tersedia")
 
     return FileResponse(
         path,
         media_type="audio/mpeg",
-        filename=f"{task_id}.mp3"
-    )
+        filename=f"{task_id}.mp3",
+   "task_id": task_id,
+        "title": title,
+        "lyrics": lyrics,
+        "cover_url": f"/generate/cover/{task_id}" )
+from fastapi import FastAPI
+from pydantic import BaseModel
+
+app = FastAPI()
+
+class Item(BaseModel):
+    name: str
+    value: str
+
+data_store = []
+
+@app.post("/add")
+def add(item: Item):
+    data_store.append(item)
+    return item
+
+@app.get("/db-all")
+def all():
+    return data_store
 
 import os, psycopg2
 
@@ -134,12 +217,6 @@ def db_all():
     cur.close()
     conn.close()
     return rows
-
-
-
-
-
-
 
 
 
