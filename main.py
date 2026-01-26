@@ -49,8 +49,8 @@ RESULTS: Dict[str, Any] = {}
 # =========================
 # REQUEST MODEL
 # =========================
-class GenerateRequest(BaseModel):
-    mv: str = "sonic-v4-5"
+class GenerateRequest(BaseModel): 
+    model: str = "V4_5"
     custom_mode: bool = False
     gpt_description_prompt: str
     tags: Optional[str] = ""
@@ -131,3 +131,4 @@ def db_all():
     cur.close()
     conn.close()
     return rows
+
