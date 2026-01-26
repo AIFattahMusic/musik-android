@@ -49,9 +49,9 @@ def generate_full_song(data: GenerateRequest):
     }
 
     try:
-        r = requests.post(MUSICAPI_CREATE_URL, headers=HEADERS, json=payload, timeout=60)
+        r = requests.post(SUNO_API_CREATE_URL, headers=HEADERS, json=payload, timeout=60)
 
-        # kalau error dari MusicAPI, tampilkan jelas
+        # kalau error dari SunobdAPI, tampilkan jelas
         if r.status_code != 200:
             raise HTTPException(status_code=r.status_code, detail=r.text)
 
@@ -66,7 +66,7 @@ def generate_full_song(data: GenerateRequest):
 # =========================
 @app.get("/generate/status/{task_id}")
 def generate_status(task_id: str):
-    r = requests.get(f"{MUSICAPI_STATUS_URL}/{task_id}", headers=HEADERS)
+    r = requests.get(f"{SUNOCAPI_STATUS_URL}/{task_id}", headers=HEADERS)
 
     if r.status_code != 200:
         raise HTTPException(status_code=404, detail=r.text)
@@ -108,6 +108,7 @@ def db_all():
     cur.close()
     conn.close()
     return rows
+
 
 
 
