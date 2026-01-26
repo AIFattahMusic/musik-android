@@ -96,3 +96,10 @@ def generate_full_song(data: GenerateRequest):
 
 # =========================
 # CALLBACK ENDPOINT
+
+@app.get("/generate/status/{task_id}")
+def generate_status(task_id: str):
+    return {
+        "task_id": task_id,
+        "status": "processing"
+    }
