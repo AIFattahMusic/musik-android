@@ -1,101 +1,126 @@
-from fastapi import FastAPI, Request
-from pydantic import BaseModel
-from typing import Optional, Any, Dict
 import os
 import time
 import requests
+from typing import Optional, Dict, Any
 
-app = FastAPI()
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
+
+app = FastAPI(title="Generator Musik AI (API Suno)", version="0.1.0")
+
+# =========================
+# CORS (biar Android aman)
+# =========================
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# =========================
+# ENV
+# =========================
+SUNO_API_URL = os.getenv("SUNO_API_URL", "https://api.sunoapi.org/api/v1/generate")
 SUNO_TOKEN = os.getenv("SUNO_TOKEN")
-SUNO_GENERATE_URL = "https://api.sunoapi.org/api/v1/generate"
-SUNO_STATUS_URL = "https://api.sunoapi.org/api/v1/generate/status"  # pakai query taskId
 
+# Base URL backend kamu (Render)
 BASE_URL = os.getenv("BASE_URL", "https://musik-android.onrender.com")
-CALLBACK_URL = f"{BASE_URL}/callback"
+CALLBACK_URL = f"{BASE_URL}/panggilan_balik"
 
 if not SUNO_TOKEN:
-    raise Exception("SUNO_TOKEN belum di set di Render Environment Variables")
+    raise Exception("SUNO_TOKEN belum diisi. Set di Render -> Environment Variables")
 
-# simpan hasil callback
-RESULTS: Dict[str, Any] = {}
+# =========================
+# In-memory storage
+# =========================
+RESULTS: Dict[str, Any] = {}  # simpan callback berdasarkan taskId
+LATEST_TASK_ID: Optional[str] = None
 
-class GenerateRequest(BaseModel):
+
+# =========================
+# Request Model
+# =========================
+class HasilkanPermintaan(BaseModel):
     prompt: str
-    style: Optional[str] = None
-    title: Optional[str] = None
+    style: Optional[str] = ""
+    title: Optional[str] = ""
     customMode: bool = False
     instrumental: bool = False
     model: str = "V4_5"
-    negativeTags: Optional[str] = None
+    negativeTags: Optional[str] = ""
 
 
-def headers():
-    return {
-        "Authorization": f"Bearer {SUNO_TOKEN}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-
-
-def extract_task_id(resp: dict) -> Optional[str]:
-    return (
-        resp.get("taskId")
-        or resp.get("task_id")
-        or (resp.get("data") or {}).get("taskId")
-        or (resp.get("data") or {}).get("task_id")
-    )
-
-
-def normalize_music(payload: dict, task_id: str):
+# =========================
+# Helper
+# =========================
+def extract_task_id(resp: Any) -> Optional[str]:
     """
-    Ambil audio_url(mp3) dan stream_audio_url dari response Suno callback/status
+    SunoApi.org biasanya balikin:
+    { code:200, data:{ task_id:"..." } }
+    atau variasi lain.
     """
-    mp3 = None
-    stream = None
-    image = None
-    title = None
-    lyrics = None
+    if not isinstance(resp, dict):
+        return None
 
-    data = payload.get("data")
+    # format umum
+    if "data" in resp and isinstance(resp["data"], dict):
+        if "task_id" in resp["data"]:
+            return resp["data"]["task_id"]
+        if "taskId" in resp["data"]:
+            return resp["data"]["taskId"]
 
-    # callback format: data: { callbackType, task_id, data: [ {audio_url, stream_audio_url,...} ] }
-    if isinstance(data, dict):
-        inner = data.get("data")
-        if isinstance(inner, list) and len(inner) > 0:
-            item = inner[0]
-            mp3 = item.get("audio_url")
-            stream = item.get("stream_audio_url")
-            image = item.get("image_url")
-            title = item.get("title")
-            lyrics = item.get("prompt")
-
-    # status format bisa beda, jadi cari juga kalau langsung list
-    if isinstance(data, list) and len(data) > 0:
-        item = data[0]
-        mp3 = item.get("audio_url") or mp3
-        stream = item.get("stream_audio_url") or stream
-        image = item.get("image_url") or image
-        title = item.get("title") or title
-        lyrics = item.get("prompt") or lyrics
-
-    return {
-        "status": "done" if mp3 or stream else "pending",
-        "taskId": task_id,
-        "mp3": mp3,          # ✅ MP3 direct
-        "image": image,
-        "title": title,
-        "lyrics": lyrics,
-    }
+    # fallback
+    return resp.get("task_id") or resp.get("taskId") or resp.get("id")
 
 
+def pick_audio_url_from_callback(callback_payload: dict) -> Optional[str]:
+    """
+    Callback complete biasanya punya:
+    payload["data"]["data"] = [ { audio_url: "....mp3" }, ... ]
+    """
+    try:
+        data = callback_payload.get("data", {})
+        tracks = data.get("data", [])
+        if isinstance(tracks, list) and len(tracks) > 0:
+            first = tracks[0]
+            # prioritas mp3 url
+            return first.get("audio_url") or first.get("source_audio_url")
+    except:
+        return None
+    return None
+
+
+# =========================
+# ROUTES
+# =========================
 @app.get("/")
-def root():
-    return {"status": "ok"}
+def home():
+    return {
+        "status": "ok",
+        "service": "Generator Musik AI (API SunoApi.org)",
+        "base_url": BASE_URL,
+        "callback_url_used": CALLBACK_URL,
+        "endpoints": {
+            "POST /menghasilkan": "Mulai generate musik",
+            "POST /panggilan_balik": "Callback dari SunoApi.org",
+            "GET /hasil/{id_tugas}": "Ambil payload callback berdasarkan taskId",
+            "GET /hasil-terbaru": "Ambil payload callback terbaru",
+            "GET /musik/status?taskId=...": "Status generate + audio_url (kalau sudah ada)",
+        },
+    }
 
 
-@app.post("/generate")
-def generate(body: GenerateRequest):
+# ==========================================
+# 1) GENERATE (Android panggil ini)
+# ==========================================
+@app.post("/menghasilkan")
+def menghasilkan(body: HasilkanPermintaan):
+    global LATEST_TASK_ID
+
     payload = {
         "prompt": body.prompt,
         "customMode": body.customMode,
@@ -104,85 +129,132 @@ def generate(body: GenerateRequest):
         "callBackUrl": CALLBACK_URL,
     }
 
+    # aturan SunoApi.org:
+    # - kalau customMode=true -> style & title wajib
     if body.customMode:
         payload["style"] = body.style
         payload["title"] = body.title
 
-    if body.negativeTags:
-        payload["negativeTags"] = body.negativeTags
+        if body.negativeTags:
+            payload["negativeTags"] = body.negativeTags
 
-    r = requests.post(SUNO_GENERATE_URL, json=payload, headers=headers(), timeout=60)
-    data = r.json()
+    # header wajib
+    headers = {
+        "Authorization": f"Bearer {SUNO_TOKEN}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+    try:
+        r = requests.post(SUNO_API_URL, json=payload, headers=headers, timeout=60)
+        data = r.json()
+    except Exception as e:
+        return {"status": "error", "message": f"Request gagal: {str(e)}"}
+
     task_id = extract_task_id(data)
+    if task_id:
+        LATEST_TASK_ID = task_id
 
     return {
         "status": "sent",
         "taskId": task_id,
         "callbackUrl": CALLBACK_URL,
-        "suno": data
+        "suno_status_code": r.status_code,
+        "suno_response": data,
+        "next_step": "Panggil GET /musik/status?taskId=... setiap 3-5 detik sampai audio_url muncul",
     }
 
 
-@app.post("/callback")
-async def callback(req: Request):
-    data = await req.json()
+# ==========================================
+# 2) CALLBACK (SunoApi.org akan POST ke sini)
+# ==========================================
+@app.post("/panggilan_balik")
+async def panggilan_balik(request: Request):
+    global LATEST_TASK_ID
 
+    payload = await request.json()
+
+    # ambil task_id dari callback
     task_id = None
-    if isinstance(data, dict):
-        task_id = (data.get("data") or {}).get("task_id") or data.get("task_id")
+    try:
+        task_id = payload.get("data", {}).get("task_id")
+    except:
+        task_id = None
 
-    if task_id:
-        RESULTS[task_id] = data
-        RESULTS["latest"] = data
+    if not task_id:
+        # simpan sebagai latest kalau taskId tidak ada
+        RESULTS["latest"] = payload
+        return {"status": "ok", "saved_as": "latest"}
 
-    return {"status": "ok", "taskId": task_id}
-
-
-@app.get("/result/{task_id}")
-def result(task_id: str):
-    if task_id not in RESULTS:
-        return {"status": "pending", "taskId": task_id, "message": "Belum ada callback masuk"}
-    return normalize_music(RESULTS[task_id], task_id)
-
-
-@app.get("/music/status")
-def music_status(taskId: str):
-    """
-    Polling status dari Suno (tanpa callback juga bisa)
-    """
-    r = requests.get(
-        SUNO_STATUS_URL,
-        params={"taskId": taskId},
-        headers=headers(),
-        timeout=240
-    )
-    payload = r.json()
-
-    # simpan juga biar bisa dipanggil /result/{taskId}
-    RESULTS[taskId] = payload
+    RESULTS[task_id] = payload
     RESULTS["latest"] = payload
+    LATEST_TASK_ID = task_id
 
-    return normalize_music(payload, taskId)
+    # ambil audio_url jika complete
+    audio_url = pick_audio_url_from_callback(payload)
+
+    return {
+        "status": "ok",
+        "taskId": task_id,
+        "callbackType": payload.get("data", {}).get("callbackType"),
+        "audio_url": audio_url,
+    }
 
 
-@app.get("/music/wait")
-def music_wait(taskId: str, delay: int = 3):
+# ==========================================
+# 3) GET hasil callback berdasarkan taskId
+# ==========================================
+@app.get("/hasil/{id_tugas}")
+def hasil(id_tugas: str):
+    if id_tugas not in RESULTS:
+        return {
+            "status": "pending",
+            "message": "Belum ada callback masuk untuk taskId ini. Tunggu lalu cek lagi.",
+            "taskId": id_tugas,
+        }
+    return RESULTS[id_tugas]
+
+
+@app.get("/hasil-terbaru")
+def hasil_terbaru():
+    if "latest" not in RESULTS:
+        return {"status": "pending", "message": "Belum ada callback masuk."}
+    return RESULTS["latest"]
+
+
+# ==========================================
+# 4) STATUS untuk Android (ini yang dipakai)
+# ==========================================
+@app.get("/musik/status")
+def musik_status(taskId: str):
     """
-    Tunggu sampai MP3/stream muncul (biar Android gampang)
+    Android cukup panggil ini berulang.
+    Kalau callback sudah masuk dan complete -> audio_url muncul.
     """
-    while True:
-        r = requests.get(
-            SUNO_STATUS_URL,
-            params={"taskId": taskId},
-            headers=headers(),
-            timeout=240
-        )
-        payload = r.json()
+    if taskId not in RESULTS:
+        return {
+            "status": "pending",
+            "taskId": taskId,
+            "message": "Masih menunggu callback dari SunoApi.org...",
+            "audio_url": None,
+        }
 
-        out = normalize_music(payload, taskId)
-        if out["mp3"] or out["stream"]:
-            RESULTS[taskId] = payload
-            RESULTS["latest"] = payload
-            return out
+    payload = RESULTS[taskId]
+    callback_type = payload.get("data", {}).get("callbackType")
+    audio_url = pick_audio_url_from_callback(payload)
 
-        time.sleep(delay)
+    if callback_type == "complete" and audio_url:
+        return {
+            "status": "complete",
+            "taskId": taskId,
+            "audio_url": audio_url,  # ini mp3 direct
+            "payload": payload,
+        }
+
+    return {
+        "status": "processing",
+        "taskId": taskId,
+        "callbackType": callback_type,
+        "audio_url": audio_url,
+        "message": "Callback sudah masuk tapi belum complete. Tunggu sebentar...",
+    }
