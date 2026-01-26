@@ -51,10 +51,10 @@ os.makedirs(GENERATED_DIR, exist_ok=True)
 # =====================================================
 class GenerateRequest(BaseModel):
     prompt: str
-    tags: str | None = None
+    tags: Optional[str] = None
     custom_mode: bool = False
     instrumental: bool = False
-    model: str = "V4_5"
+    model: str = "v4_5"
 
 # =====================================================
 # HEALTH CHECK
@@ -134,6 +134,7 @@ def db_all():
     cur.close()
     conn.close()
     return rows
+
 
 
 
