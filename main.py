@@ -17,7 +17,7 @@ SUNO_STATUS_URL = os.getenv("SUNO_STATUS_URL", "https://api.sunoapi.org/api/v1/s
 SUNO_TOKEN = os.getenv("SUNO_TOKEN")
 
 # Base URL APP INI (musik-android)
-BASE_URL = os.getenv("BASE_URL", "https://musik-android.onrender.com")
+BASE_URL = "https://ai-music-fattah.onrender.com"
 CALLBACK_URL = f"{BASE_URL}/callback"
 
 if not SUNO_TOKEN:
@@ -188,6 +188,7 @@ def music_status(taskId: str):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 
