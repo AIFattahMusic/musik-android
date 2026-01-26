@@ -102,97 +102,6 @@ def generate_full_song(data: GenerateRequest):
         "status": "generated"
     }
 
-
-# =========================
-# GET METADATA
-# =========================
-@app.get("/generate/metadata/{task_id}")
-def get_metadata(task_id: str):
-    path = f"{GENERATED_DIR}/{task_id}.json"
-
-    if not os.path.exists(path):
-        raise HTTPException(404, "Metadata tidak ditemukan")
-
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-# =========================
-# DOWNLOAD MP3
-# =========================
-@app.get("/generate/download/{task_id}")
-def download_mp3(task_id: str):
-    path = f"{GENERATED_DIR}/{task_id}.mp3"
-
-    if not os.path.exists(path):
-        raise HTTPException(404, "File tidak ditemukan")
-
-    return FileResponse(
-        path,
-        media_type="audio/mpeg",
-        filename=f"{task_id}.mp3"
-    )
-
-
-# =========================
-# GET COVER IMAGE
-# =========================
-@app.get("/generate/cover/{task_id}")
-def get_cover(task_id: str):
-    path = f"{GENERATED_DIR}/{task_id}.jpg"
-
-    if not os.path.exists(path):
-        raise HTTPException(404, "Cover tidak ditemukan")
-
-    return FileResponse(
-        path,
-        media_type="image/jpeg",
-        filename=f"{task_id}.jpg"
-    )
-
-# =====================================================
-# STATUS (TANPA POLLING SUNO)
-# =====================================================
-@app.get("/generate/status/{task_id}")
-def generate_status(task_id: str):
-    mp3_path = f"{GENERATED_DIR}/{task_id}.mp3"
-
-    if os.path.exists(mp3_path):
-        return {
-            "status": "done",
-            "download_url": f"{BASE_URL}/generate/download/{task_id}",
-        }
-
-    return {"status": "processing"}
-
-# =========================
-# DOWNLOAD MP3
-# =========================
-@app.get("/generate/download/{task_id}")
-def download_mp3(task_id: str):
-    path = f"{GENERATED_DIR}/{task_id}.mp3"
-
-    if not os.path.exists(path):
-        raise HTTPException(404, "File belum tersedia")
-
-    return FileResponse(
-        path,
-        media_type="audio/mpeg",
-        filename=f"{task_id}.mp3"
-    )
-
-
-# =========================
-# METADATA LAGU
-# =========================
-@app.get("/generate/metadata/{task_id}")
-def get_metadata(task_id: str):
-    return {
-        "title": "Judul Lagu",
-        "lyrics": "Ini lirik lagu...\nBaris kedua...\nBaris ketiga..."
-    }
-
-
 import os, psycopg2
 
 def get_conn():
@@ -210,6 +119,7 @@ def db_all():
     cur.close()
     conn.close()
     return rows
+
 
 
 
