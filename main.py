@@ -1,6 +1,6 @@
-BDimport os
+import os
 import requests
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,7 +21,7 @@ app.add_middleware(
 )
 
 # =========================
-# ENV
+# ENV (AMAN UNTUK STARTUP)
 # =========================
 SUNO_API_CREATE_URL = os.getenv(
     "SUNO_API_CREATE_URL",
@@ -33,41 +33,45 @@ SUNO_API_STATUS_URL = os.getenv(
 )
 SUNO_TOKEN = os.getenv("SUNO_TOKEN")
 
-if not SUNO_TOKEN:
-    raise Exception("SUNO_TOKEN belum diisi (Render → Environment Variables)")
-
 HEADERS = {
-    "Authorization": f"Bearer {SUNO_TOKEN}",
-    "Content-Type": "application/json"
+    "Authorization": f"Bearer {SUNO_TOKEN}" if SUNO_TOKEN else "",
+    "Content-Type": "application/json",
 }
 
 # =========================
-# STORAGE
-# =========================
-RESULTS: Dict[str, Any] = {}
-
-# =========================
-# REQUEST MODEL
+# REQUEST MODEL (KONSISTEN)
 # =========================
 class GenerateRequest(BaseModel):
     prompt: str
-    style: str = ""
-    title: str = "False"
-    customMode: bool = False
+    tags: str = ""
+    custom_mode: bool = False
     instrumental: bool = False
     model: str = "V4_5"
-    negativeTags: str = ""
 
 # =========================
-# ENDPOINT: GENERATE SONG
+# HEALTH CHECK (WAJIB)
+# =========================
+@app.get("/")
+def root():
+    return {"status": "ok"}
+
+# =========================
+# GENERATE SONG
 # =========================
 @app.post("/generate/full-song")
 def generate_full_song(data: GenerateRequest):
+    if not SUNO_TOKEN:
+        raise HTTPException(
+            status_code=500,
+            detail="SUNO_TOKEN belum diset di Render Environment Variables"
+        )
+
     payload = {
-        "mv": data.mv,
-        "custom_mode": data.custom_mode,
-        "gpt_description_prompt": data.gpt_description_prompt,
+        "prompt": data.prompt,
         "tags": data.tags,
+        "custom_mode": data.custom_mode,
+        "instrumental": data.instrumental,
+        "model": data.model,
     }
 
     try:
@@ -75,7 +79,7 @@ def generate_full_song(data: GenerateRequest):
             SUNO_API_CREATE_URL,
             headers=HEADERS,
             json=payload,
-            timeout=60
+            timeout=60,
         )
 
         if r.status_code != 200:
@@ -87,14 +91,20 @@ def generate_full_song(data: GenerateRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 # =========================
-# ENDPOINT: STATUS
+# STATUS
 # =========================
 @app.get("/generate/status/{task_id}")
 def generate_status(task_id: str):
+    if not SUNO_TOKEN:
+        raise HTTPException(
+            status_code=500,
+            detail="SUNO_TOKEN belum diset di Render Environment Variables"
+        )
+
     r = requests.get(
         f"{SUNO_API_STATUS_URL}/{task_id}",
         headers=HEADERS,
-        timeout=30
+        timeout=30,
     )
 
     if r.status_code != 200:
@@ -104,11 +114,15 @@ def generate_status(task_id: str):
     data = res.get("data", [])
 
     if not data:
-        return {"status": "processing", "result": res}
+        return {"status": "processing"}
 
     item = data[0]
     state = item.get("state") or item.get("status")
-    audio_url = item.get("audio_url") or item.get("audioUrl") or item.get("audio")
+    audio_url = (
+        item.get("audio_url")
+        or item.get("audioUrl")
+        or item.get("audio")
+    )
 
     if state == "succeeded" and audio_url:
         return {"status": "done", "audio_url": audio_url}
@@ -116,10 +130,16 @@ def generate_status(task_id: str):
     return {"status": "processing", "result": item}
 
 # =========================
-# DATABASE TEST
+# DATABASE (AMAN)
 # =========================
 def get_conn():
-    return psycopg2.connect(os.environ["DATABASE_URL"])
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        raise HTTPException(
+            status_code=500,
+            detail="DATABASE_URL belum diset"
+        )
+    return psycopg2.connect(db_url)
 
 @app.get("/db-all")
 def db_all():
@@ -134,5 +154,3 @@ def db_all():
     cur.close()
     conn.close()
     return rows
-
-
