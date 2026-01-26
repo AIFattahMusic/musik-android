@@ -1,105 +1,106 @@
-import os
-import requests
-from typing import Dict, Any
-
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import psycopg2
+import requests
+import os
+import json
+import re
+from dotenv import load_dotenv
 
-# =========================
-# APP
-# =========================
-app = FastAPI()
+load_dotenv()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="Suno Generator + Callback Render")
 
-# =========================
-# ENV
-# =========================
-SUNO_API_CREATE_URL = os.getenv(
-    "SUNO_API_CREATE_URL",
-    "https://api.sunoapi.org/api/v1/generate"
-)
-SUNO_API_STATUS_URL = os.getenv(
-    "SUNO_API_STATUS_URL",
-    "https://api.sunoapi.org/api/v1/status"
-)
+SUNO_API_URL = os.getenv("SUNO_API_URL", "https://api.sunoapi.org/api/v1/generate")
 SUNO_TOKEN = os.getenv("SUNO_TOKEN")
 
-BASE_URL = os.getenv(
-    "BASE_URL",
-    "https://musik-android.onrender.com"
-)
+# Callback kamu (Render)
+CALLBACK_URL = "https://ai-music-fattah.onrender.com/callback"
 
-HEADERS = {
-    "Authorization": f"Bearer {SUNO_TOKEN}",
-    "Content-Type": "application/json",
-}
+if not SUNO_TOKEN:
+    raise Exception("SUNO_TOKEN belum diisi. Isi di file .env: SUNO_TOKEN=token_kamu")
+
+# Simpan hasil callback di memory
+RESULTS = {}  # key: taskId / id / "latest"
+
 
 # =========================
-# REQUEST MODEL
+# Request body
 # =========================
 class GenerateRequest(BaseModel):
     prompt: str
-    tags: str = ""
-    custom_mode: bool = False
+    style: str = ""
+    title: str = "False"
+    customMode: bool = False
     instrumental: bool = False
     model: str = "V4_5"
+    negativeTags: str = "False"
+
 
 # =========================
-# HEALTH CHECK
+# Helpers
 # =========================
-@app.get("/")
-def root():
-    return {"status": "ok"}
+def extract_urls(text: str):
+    if not isinstance(text, str):
+        return []
+    return re.findall(r"https?://[^\s\"\'\)\]]+", text)
 
-# =========================
-# GENERATE SONG (FIXED)
-# =========================
-@app.post("/generate/full-song")
-def generate_full_song(data: GenerateRequest):
-    if not SUNO_TOKEN:
-        raise HTTPException(
-            status_code=500,
-            detail="SUNO_TOKEN belum diset di Render"
-        )
 
-    payload = {
-        "prompt": data.prompt,
-        "tags": data.tags,
-        "custom_mode": data.custom_mode,
-        "instrumental": data.instrumental,
-        "model": data.model,
-        # 🔴 INI WAJIB
-        "callBackUrl": f"{BASE_URL}/callback",
-    }
+def find_audio_urls(obj):
+    found = []
 
-    try:
-        r = requests.post(
-            SUNO_API_CREATE_URL,
-            headers=HEADERS,
-            json=payload,
-            timeout=60,
-        )
+    def walk(x):
+        if isinstance(x, dict):
+            for k, v in x.items():
+                key = str(k).lower()
 
-        return r.json()
+                if isinstance(v, str):
+                    if v.startswith("http"):
+                        if (
+                            "audio" in key
+                            or "url" in key
+                            or "link" in key
+                            or v.lower().endswith((".mp3", ".wav", ".m4a"))
+                        ):
+                            found.append(v)
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+                    for u in extract_urls(v):
+                        if u.lower().endswith((".mp3", ".wav", ".m4a")) or "audio" in u.lower():
+                            found.append(u)
 
-# =========================
-# CALLBACK ENDPOINT
+                walk(v)
 
-@app.get("/generate/status/{task_id}")
-def generate_status(task_id: str):
-    return {
-        "task_id": task_id,
-        "status": "processing"
-    }
+        elif isinstance(x, list):
+            for item in x:
+                walk(item)
+
+        elif isinstance(x, str):
+            for u in extract_urls(x):
+                if u.lower().endswith((".mp3", ".wav", ".m4a")) or "audio" in u.lower():
+                    found.append(u)
+
+    walk(obj)
+    return list(dict.fromkeys(found))
+
+
+def guess_task_id(obj):
+    if not isinstance(obj, dict):
+        return None
+    data_obj = obj.get("data") or {}
+    return (
+        obj.get("taskId")
+        or obj.get("id")
+        or data_obj.get("taskId")
+        or data_obj.get("id")
+    )
+
+
+def guess_status(obj):
+    if not isinstance(obj, dict):
+        return None
+    data_obj = obj.get("data") or {}
+    return (
+        obj.get("status")
+        or data_obj.get("status")
+        or obj.get("state")
+        or data_obj.get("state")
+    )
