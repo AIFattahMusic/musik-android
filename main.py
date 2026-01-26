@@ -1,4 +1,4 @@
-import os
+BDimport os
 import requests
 from typing import Optional, Dict, Any
 
@@ -49,11 +49,14 @@ RESULTS: Dict[str, Any] = {}
 # =========================
 # REQUEST MODEL
 # =========================
-class GenerateRequest(BaseModel): 
+class GenerateRequest(BaseModel):
+    prompt: str
+    style: str = ""
+    title: str = "False"
+    customMode: bool = False
+    instrumental: bool = False
     model: str = "V4_5"
-    custom_mode: bool = False
-    gpt_description_prompt: str
-    tags: Optional[str] = ""
+    negativeTags: str = ""
 
 # =========================
 # ENDPOINT: GENERATE SONG
@@ -131,4 +134,5 @@ def db_all():
     cur.close()
     conn.close()
     return rows
+
 
