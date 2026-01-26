@@ -19,13 +19,16 @@ app.add_middleware(
 )
 
 # =========================
-# ENV
+# BASE URL (PUBLIC)
 # =========================
 BASE_URL = os.getenv(
     "BASE_URL",
     "https://musik-android.onrender.com"
 )
 
+# =========================
+# SUNO CONFIG
+# =========================
 SUNO_API_CREATE_URL = os.getenv(
     "SUNO_API_CREATE_URL",
     "https://api.sunoapi.org/api/v1/generate"
@@ -35,6 +38,9 @@ SUNO_API_STATUS_URL = os.getenv(
     "https://api.sunoapi.org/api/v1/status"
 )
 SUNO_TOKEN = os.getenv("SUNO_TOKEN")
+
+if not SUNO_TOKEN:
+    raise RuntimeError("SUNO_TOKEN belum diset")
 
 HEADERS = {
     "Authorization": f"Bearer {SUNO_TOKEN}",
@@ -58,20 +64,17 @@ class GenerateRequest(BaseModel):
     model: str = "V4_5"
 
 # =========================
-# HEALTH
+# HEALTH CHECK
 # =========================
 @app.get("/")
 def root():
     return {"status": "ok"}
 
 # =========================
-# GENERATE
+# GENERATE SONG
 # =========================
 @app.post("/generate/full-song")
 def generate_full_song(data: GenerateRequest):
-    if not SUNO_TOKEN:
-        raise HTTPException(500, "SUNO_TOKEN belum diset")
-
     payload = {
         "prompt": data.prompt,
         "tags": data.tags,
@@ -93,22 +96,20 @@ def generate_full_song(data: GenerateRequest):
     return r.json()
 
 # =========================
-# STATUS (AUTO DOWNLOAD)
+# STATUS + AUTO DOWNLOAD
 # =========================
 @app.get("/generate/status/{task_id}")
 def generate_status(task_id: str):
-    if not SUNO_TOKEN:
-        raise HTTPException(500, "SUNO_TOKEN belum diset")
-
     mp3_path = f"{GENERATED_DIR}/{task_id}.mp3"
 
-    # Jika sudah ada file
+    # Jika file sudah ada
     if os.path.exists(mp3_path):
         return {
             "status": "done",
             "download_url": f"{BASE_URL}/generate/download/{task_id}"
         }
 
+    # Cek status ke Suno
     r = requests.get(
         f"{SUNO_API_STATUS_URL}/{task_id}",
         headers=HEADERS,
@@ -137,7 +138,7 @@ def generate_status(task_id: str):
     if state in ["SUCCESS", "succeeded", "done"] and audio_url:
         audio_resp = requests.get(audio_url, timeout=60)
         if audio_resp.status_code != 200:
-            raise HTTPException(500, "Gagal download audio")
+            raise HTTPException(500, "Gagal download audio dari Suno")
 
         with open(mp3_path, "wb") as f:
             f.write(audio_resp.content)
@@ -161,6 +162,7 @@ def generate_status(task_id: str):
 @app.get("/generate/download/{task_id}")
 def download_mp3(task_id: str):
     path = f"{GENERATED_DIR}/{task_id}.mp3"
+
     if not os.path.exists(path):
         raise HTTPException(404, "File belum tersedia")
 
@@ -169,3 +171,5 @@ def download_mp3(task_id: str):
         media_type="audio/mpeg",
         filename=f"{task_id}.mp3"
     )
+
+
