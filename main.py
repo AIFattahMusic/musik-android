@@ -50,7 +50,7 @@ class GenerateRequest(BaseModel):
     # lirik (opsional)
     lyrics: Optional[str] = None
 
-    # negative tags (False)
+    # negative tags (opsional)
     negativeTags: Optional[False] = None
 
 
@@ -188,4 +188,5 @@ def music_status(taskId: str):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
