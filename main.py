@@ -1,6 +1,6 @@
 import os
 import requests
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -29,14 +29,8 @@ BASE_URL = os.getenv(
 # =========================
 # SUNO CONFIG
 # =========================
-SUNO_API_CREATE_URL = os.getenv(
-    "SUNO_API_CREATE_URL",
-    "https://api.sunoapi.org/api/v1/generate"
-)
-SUNO_API_STATUS_URL = os.getenv(
-    "SUNO_API_STATUS_URL",
-    "https://api.sunoapi.org/api/v1/status"
-)
+SUNO_API_CREATE_URL = "https://api.sunoapi.org/api/v1/generate"
+SUNO_API_STATUS_URL = "https://api.sunoapi.org/api/v1/status"
 SUNO_TOKEN = os.getenv("SUNO_TOKEN")
 
 if not SUNO_TOKEN:
@@ -64,7 +58,7 @@ class GenerateRequest(BaseModel):
     model: str = "V4_5"
 
 # =========================
-# HEALTH CHECK
+# HEALTH
 # =========================
 @app.get("/")
 def root():
@@ -81,6 +75,8 @@ def generate_full_song(data: GenerateRequest):
         "custom_mode": data.custom_mode,
         "instrumental": data.instrumental,
         "model": data.model,
+        # WAJIB UNTUK SUNO
+        "callBackUrl": f"{BASE_URL}/generate/callback"
     }
 
     r = requests.post(
@@ -96,13 +92,26 @@ def generate_full_song(data: GenerateRequest):
     return r.json()
 
 # =========================
+# CALLBACK (WAJIB ADA)
+# =========================
+@app.post("/generate/callback")
+async def generate_callback(req: Request):
+    """
+    Endpoint ini dipanggil Suno saat job selesai.
+    Kita TIDAK mengandalkan callback sepenuhnya,
+    tapi endpoint ini WAJIB ada agar request tidak ditolak.
+    """
+    payload = await req.json()
+    return {"status": "received"}
+
+# =========================
 # STATUS + AUTO DOWNLOAD
 # =========================
 @app.get("/generate/status/{task_id}")
 def generate_status(task_id: str):
     mp3_path = f"{GENERATED_DIR}/{task_id}.mp3"
 
-    # Jika file sudah ada
+    # Jika sudah ada file
     if os.path.exists(mp3_path):
         return {
             "status": "done",
@@ -138,7 +147,7 @@ def generate_status(task_id: str):
     if state in ["SUCCESS", "succeeded", "done"] and audio_url:
         audio_resp = requests.get(audio_url, timeout=60)
         if audio_resp.status_code != 200:
-            raise HTTPException(500, "Gagal download audio dari Suno")
+            raise HTTPException(500, "Gagal download audio")
 
         with open(mp3_path, "wb") as f:
             f.write(audio_resp.content)
@@ -172,6 +181,7 @@ def download_mp3(task_id: str):
         filename=f"{task_id}.mp3"
     )
 
+
 import os, psycopg2
 
 def get_conn():
@@ -189,4 +199,5 @@ def db_all():
     cur.close()
     conn.close()
     return rows
+
 
