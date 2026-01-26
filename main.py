@@ -172,4 +172,21 @@ def download_mp3(task_id: str):
         filename=f"{task_id}.mp3"
     )
 
+import os, psycopg2
+
+def get_conn():
+    return psycopg2.connect(os.environ["DATABASE_URL"])
+@app.get("/db-all")
+def db_all():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT *
+        FROM information_schema.tables
+        WHERE table_schema = 'public';
+    """)
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
 
