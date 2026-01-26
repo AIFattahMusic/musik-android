@@ -1,34 +1,53 @@
 import os
-import time
 import requests
 from typing import Optional, Dict, Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import psycopg2
+
+# =========================
+# APP
+# =========================
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # =========================
 # ENV
 # =========================
-SUNO_API_URL = os.getenv("SUNO_API_URL", "https://api.sunoapi.org/api/v1/generate")
+SUNO_API_CREATE_URL = os.getenv(
+    "SUNO_API_CREATE_URL",
+    "https://api.sunoapi.org/api/v1/generate"
+)
+SUNO_API_STATUS_URL = os.getenv(
+    "SUNO_API_STATUS_URL",
+    "https://api.sunoapi.org/api/v1/status"
+)
 SUNO_TOKEN = os.getenv("SUNO_TOKEN")
 
-# Base URL backend kamu (Render)
-BASE_URL = os.getenv("BASE_URL", "https://musik-android.onrender.com")
-CALLBACK_URL = f"{BASE_URL}/panggilan_balik"
-
 if not SUNO_TOKEN:
-    raise Exception("SUNO_TOKEN belum diisi. Set di Render -> Environment Variables")
+    raise Exception("SUNO_TOKEN belum diisi (Render → Environment Variables)")
+
+HEADERS = {
+    "Authorization": f"Bearer {SUNO_TOKEN}",
+    "Content-Type": "application/json"
+}
 
 # =========================
-# In-memory storage
+# STORAGE
 # =========================
-RESULTS: Dict[str, Any] = {}  # simpan callback berdasarkan taskId
-LATEST_TASK_ID: Optional[str] = None
-
+RESULTS: Dict[str, Any] = {}
 
 # =========================
-# Request Model
+# REQUEST MODEL
 # =========================
 class GenerateRequest(BaseModel):
     mv: str = "sonic-v4-5"
@@ -37,7 +56,7 @@ class GenerateRequest(BaseModel):
     tags: Optional[str] = ""
 
 # =========================
-# ENDPOINT 1: GENERATE FULL SONG
+# ENDPOINT: GENERATE SONG
 # =========================
 @app.post("/generate/full-song")
 def generate_full_song(data: GenerateRequest):
@@ -45,13 +64,17 @@ def generate_full_song(data: GenerateRequest):
         "mv": data.mv,
         "custom_mode": data.custom_mode,
         "gpt_description_prompt": data.gpt_description_prompt,
-        "tags": data.tags
+        "tags": data.tags,
     }
 
     try:
-        r = requests.post(SUNO_API_CREATE_URL, headers=HEADERS, json=payload, timeout=60)
+        r = requests.post(
+            SUNO_API_CREATE_URL,
+            headers=HEADERS,
+            json=payload,
+            timeout=60
+        )
 
-        # kalau error dari SunobdAPI, tampilkan jelas
         if r.status_code != 200:
             raise HTTPException(status_code=r.status_code, detail=r.text)
 
@@ -60,47 +83,47 @@ def generate_full_song(data: GenerateRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # =========================
-# ENDPOINT 2: CEK STATUS TASK
+# ENDPOINT: STATUS
 # =========================
 @app.get("/generate/status/{task_id}")
 def generate_status(task_id: str):
-    r = requests.get(f"{SUNOCAPI_STATUS_URL}/{task_id}", headers=HEADERS)
+    r = requests.get(
+        f"{SUNO_API_STATUS_URL}/{task_id}",
+        headers=HEADERS,
+        timeout=30
+    )
 
     if r.status_code != 200:
         raise HTTPException(status_code=404, detail=r.text)
 
     res = r.json()
+    data = res.get("data", [])
 
-    # ambil data item pertama
-    item = None
-    if isinstance(res.get("data"), list) and len(res["data"]) > 0:
-        item = res["data"][0]
-
-    if not item:
+    if not data:
         return {"status": "processing", "result": res}
 
+    item = data[0]
     state = item.get("state") or item.get("status")
     audio_url = item.get("audio_url") or item.get("audioUrl") or item.get("audio")
 
-    # kalau sudah selesai dan ada audio
     if state == "succeeded" and audio_url:
-        return {"status": "done", "audio_url": audio_url, "result": item}
+        return {"status": "done", "audio_url": audio_url}
 
     return {"status": "processing", "result": item}
 
-
-import os, psycopg2
-
+# =========================
+# DATABASE TEST
+# =========================
 def get_conn():
     return psycopg2.connect(os.environ["DATABASE_URL"])
+
 @app.get("/db-all")
 def db_all():
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
-        SELECT *
+        SELECT table_name
         FROM information_schema.tables
         WHERE table_schema = 'public';
     """)
@@ -108,7 +131,3 @@ def db_all():
     cur.close()
     conn.close()
     return rows
-
-
-
-
