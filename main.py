@@ -112,18 +112,6 @@ async def suno_callback(request: Request):
 
     return {"status": "ok"}
 
-app = FastAPI()
-
-class Item(BaseModel):
-    name: str
-    value: str
-
-data_store = []
-
-@app.post("/add")
-def add(item: Item):
-    data_store.append(item)
-    return item
 
 @app.get("/db-all")
 def all():
@@ -146,3 +134,4 @@ def db_all():
     cur.close()
     conn.close()
     return rows
+
