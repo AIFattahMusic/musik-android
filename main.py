@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 import requests
 import os
+import time
 
 app = FastAPI()
 
@@ -12,7 +13,6 @@ SUNO_API_URL_GENERATE = "https://api.sunoapi.org/api/v1/generate"
 SUNO_API_URL_EXTEND = "https://api.sunoapi.org/api/v1/generate/extend"
 CALLBACK_URL = "https://musik-android.onrender.com/suno/callback"
 
-# 🔥 FALLBACK TOKEN (INI KUNCI)
 SUNO_API_TOKEN = (
     os.getenv("SUNO_API_TOKEN")
     or os.getenv("SUNO_TOKEN")
@@ -22,16 +22,30 @@ def get_headers():
     if not SUNO_API_TOKEN:
         raise HTTPException(
             status_code=500,
-            detail="SUNO_API_TOKEN belum terbaca di environment"
+            detail="SUNO_API_TOKEN tidak terbaca"
         )
-
     return {
         "Authorization": f"Bearer {SUNO_API_TOKEN}",
         "Content-Type": "application/json"
     }
 
 # ======================
-# IN-MEMORY DB
+# SIMPLE RATE LIMITER
+# ======================
+last_generate_time = 0
+
+def rate_limit(seconds=60):
+    global last_generate_time
+    now = time.time()
+    if now - last_generate_time < seconds:
+        raise HTTPException(
+            status_code=429,
+            detail="Tunggu 1 menit sebelum generate lagi"
+        )
+    last_generate_time = now
+
+# ======================
+# MEMORY STORE
 # ======================
 music_tasks = {}
 
@@ -44,7 +58,6 @@ class GenerateRequest(BaseModel):
     title: str | None = "My Song"
     vocalGender: str | None = None
 
-
 class ExtendRequest(BaseModel):
     audioId: str
     continueAt: int = 60
@@ -52,7 +65,7 @@ class ExtendRequest(BaseModel):
     title: str | None = None
 
 # ======================
-# HEALTH CHECK
+# HEALTH
 # ======================
 @app.get("/")
 def health():
@@ -62,10 +75,11 @@ def health():
     }
 
 # ======================
-# GENERATE MUSIC (BARU)
+# GENERATE MUSIC (AMAN)
 # ======================
 @app.post("/suno/generate")
 def generate_music(body: GenerateRequest):
+    rate_limit(60)
     headers = get_headers()
 
     payload = {
@@ -84,14 +98,22 @@ def generate_music(body: GenerateRequest):
         timeout=30
     )
 
-    if response.status_code != 200:
-        raise HTTPException(
-            status_code=response.status_code,
-            detail=response.text
-        )
-
     data = response.json()
-    task_id = data.get("taskId")
+
+    # 🔥 AMBIL taskId DARI SEMUA KEMUNGKINAN
+    task_id = (
+        data.get("taskId")
+        or data.get("data", {}).get("taskId")
+        or data.get("data", {}).get("task", {}).get("taskId")
+    )
+
+    # ❌ JANGAN BOROS TOKEN
+    if not task_id:
+        print("SUNO RAW RESPONSE:", data)
+        raise HTTPException(
+            status_code=500,
+            detail="taskId tidak ditemukan. Generate dihentikan."
+        )
 
     music_tasks[task_id] = {
         "status": "PENDING",
@@ -107,10 +129,11 @@ def generate_music(body: GenerateRequest):
     }
 
 # ======================
-# EXTEND MUSIC
+# EXTEND MUSIC (AMAN)
 # ======================
 @app.post("/suno/extend")
 def extend_music(body: ExtendRequest):
+    rate_limit(60)
     headers = get_headers()
 
     payload = {
@@ -118,12 +141,9 @@ def extend_music(body: ExtendRequest):
         "audioId": body.audioId,
         "model": "V4_5ALL",
         "callBackUrl": CALLBACK_URL,
-        "prompt": body.prompt or "Extend the music smoothly",
+        "prompt": body.prompt or "Extend smoothly",
         "title": body.title or "Extended Music",
-        "continueAt": body.continueAt,
-        "styleWeight": 0.65,
-        "audioWeight": 0.65,
-        "weirdnessConstraint": 0.65
+        "continueAt": body.continueAt
     }
 
     response = requests.post(
@@ -133,14 +153,20 @@ def extend_music(body: ExtendRequest):
         timeout=30
     )
 
-    if response.status_code != 200:
-        raise HTTPException(
-            status_code=response.status_code,
-            detail=response.text
-        )
-
     data = response.json()
-    task_id = data.get("taskId")
+
+    task_id = (
+        data.get("taskId")
+        or data.get("data", {}).get("taskId")
+        or data.get("data", {}).get("task", {}).get("taskId")
+    )
+
+    if not task_id:
+        print("SUNO RAW RESPONSE:", data)
+        raise HTTPException(
+            status_code=500,
+            detail="taskId tidak ditemukan. Extend dihentikan."
+        )
 
     music_tasks[task_id] = {
         "status": "PENDING",
@@ -156,7 +182,7 @@ def extend_music(body: ExtendRequest):
     }
 
 # ======================
-# CHECK STATUS
+# CHECK STATUS (GRATIS)
 # ======================
 @app.get("/suno/status/{task_id}")
 def check_status(task_id: str):
@@ -166,23 +192,30 @@ def check_status(task_id: str):
             status_code=404,
             detail="Task ID tidak ditemukan"
         )
-
     return {
         "taskId": task_id,
         **task
     }
 
 # ======================
-# CALLBACK
+# CALLBACK (PENTING)
 # ======================
 @app.post("/suno/callback")
 async def suno_callback(request: Request):
     payload = await request.json()
 
-    print("=== SUNO CALLBACK ===")
-    print(payload)
+    print("SUNO CALLBACK:", payload)
 
     task_id = payload.get("taskId")
+    if not task_id:
+        return {"status": "ignored"}
 
-    if task_id not in music_tasks:
-        music_tasks[task_id]
+    music_tasks.setdefault(task_id, {})
+    music_tasks[task_id].update({
+        "status": payload.get("status"),
+        "audioUrl": payload.get("audioUrl"),
+        "coverUrl": payload.get("coverUrl"),
+        "duration": payload.get("duration")
+    })
+
+    return {"status": "ok"}
