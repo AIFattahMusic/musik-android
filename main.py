@@ -176,13 +176,16 @@ def download_mp3(task_id: str):
         path,
         media_type="audio/mpeg",
         filename=f"{task_id}.mp3",
-   "task_id": task_id,
-        "title": title,
-        "lyrics": lyrics,
         "cover_url": f"/generate/cover/{task_id}" )
 from fastapi import FastAPI
 from pydantic import BaseModel
-
+return {
+    "task_id": task_id,
+    "title": title,
+    "lyrics": lyrics,
+    "cover_url": f"/generate/cover/{task_id}",
+    "audio_url": f"/generate/audio/{task_id}"
+}
 app = FastAPI()
 
 class Item(BaseModel):
@@ -217,6 +220,7 @@ def db_all():
     cur.close()
     conn.close()
     return rows
+
 
 
 
