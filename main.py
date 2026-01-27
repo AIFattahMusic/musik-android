@@ -1,27 +1,63 @@
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
-import os
-import threading
-import requests
+from sqlalchemy import Column, Integer, String, DateTime, create_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
+from datetime import datetime
+import os, threading, requests
 
+# ======================
+# APP
+# ======================
 app = FastAPI()
 
+# ======================
+# CONFIG
+# ======================
 SAVE_DIR = "generated_music"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-SUNO_API_URL = "https://api.sunoapi.org/api/v1/generate"  # contoh
 SUNO_API_KEY = os.environ.get("SUNO_API_KEY")
+SUNO_URL = "https://api.sunoapi.org/api/v1/generate"
+CALLBACK_URL = "https://musik-android.onrender.com/generate-music-callback"
+
+# ======================
+# DATABASE (SQLite)
+# ======================
+DATABASE_URL = "sqlite:///./music.db"
+
+engine = create_engine(
+    DATABASE_URL, connect_args={"check_same_thread": False}
+)
+SessionLocal = sessionmaker(bind=engine)
+
+Base = declarative_base()
 
 
-# =========================
-# 1️⃣ GENERATE 1 LAGU
-# =========================
+class Song(Base):
+    __tablename__ = "songs"
+
+    id = Column(Integer, primary_key=True)
+    task_id = Column(String, unique=True, index=True)
+    prompt = Column(String)
+    status = Column(String, default="pending")
+    filename = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+Base.metadata.create_all(bind=engine)
+
+# ======================
+# GENERATE 1 SONG
+# ======================
 @app.post("/generate")
-def generate_one_song():
+def generate_song(prompt: str):
+    if not SUNO_API_KEY:
+        raise HTTPException(500, "SUNO_API_KEY belum diset")
+
     payload = {
-        "prompt": "chill lo-fi instrumental",
-        "n_tokens": 1,
-        "callback_url": "https://musik-android.onrender.com/generate-music-callback"
+        "prompt": prompt,
+        "make_instrumental": True,
+        "callback_url": CALLBACK_URL
     }
 
     headers = {
@@ -29,16 +65,29 @@ def generate_one_song():
         "Content-Type": "application/json"
     }
 
-    r = requests.post(SUNO_API_URL, json=payload, headers=headers, timeout=30)
+    r = requests.post(SUNO_URL, json=payload, headers=headers, timeout=30)
+    result = r.json()
 
-    return r.json()
+    task_id = result.get("data", {}).get("task_id")
+    if not task_id:
+        raise HTTPException(500, "Generate gagal")
 
+    db = SessionLocal()
+    song = Song(task_id=task_id, prompt=prompt, status="pending")
+    db.add(song)
+    db.commit()
+    db.close()
 
-# =========================
-# 2️⃣ CALLBACK SUNO
-# =========================
+    return {"task_id": task_id, "status": "pending"}
+
+# ======================
+# CALLBACK SUNO
+# ======================
 def download_music(task_id, musics):
-    for i, music in enumerate(musics, start=1):
+    db = SessionLocal()
+    song = db.query(Song).filter(Song.task_id == task_id).first()
+
+    for music in musics:
         audio_url = music.get("audio_url")
         if not audio_url:
             continue
@@ -46,9 +95,16 @@ def download_music(task_id, musics):
         r = requests.get(audio_url, timeout=30)
         if r.status_code == 200:
             filename = f"{task_id}.mp3"
-            with open(os.path.join(SAVE_DIR, filename), "wb") as f:
+            path = os.path.join(SAVE_DIR, filename)
+
+            with open(path, "wb") as f:
                 f.write(r.content)
-            print("Saved:", filename)
+
+            song.status = "completed"
+            song.filename = filename
+            db.commit()
+
+    db.close()
 
 
 @app.post("/generate-music-callback")
@@ -61,7 +117,6 @@ async def generate_music_callback(request: Request):
     task_id = data.get("task_id")
     musics = data.get("data", [])
 
-    # BALAS CEPAT KE SUNO
     response = JSONResponse({"status": "received"}, status_code=200)
 
     if code == 200 and callback_type == "complete":
@@ -73,35 +128,49 @@ async def generate_music_callback(request: Request):
 
     return response
 
+# ======================
+# LIST SONGS
+# ======================
+@app.get("/songs")
+def list_songs():
+    db = SessionLocal()
+    songs = db.query(Song).all()
+    db.close()
 
-# =========================
-# 3️⃣ PUTAR LAGU
-# =========================
-@app.get("/play/{filename}")
-def play_music(filename: str):
-    filepath = os.path.join(SAVE_DIR, filename)
-    if not os.path.exists(filepath):
-        raise HTTPException(status_code=404, detail="File not found")
+    return [
+        {
+            "task_id": s.task_id,
+            "prompt": s.prompt,
+            "status": s.status,
+            "filename": s.filename
+        }
+        for s in songs
+    ]
 
-    return FileResponse(
-        filepath,
-        media_type="audio/mpeg",
-        filename=filename
-    )
+# ======================
+# PLAY & DOWNLOAD
+# ======================
+@app.get("/play/{task_id}")
+def play_song(task_id: str):
+    db = SessionLocal()
+    song = db.query(Song).filter(Song.task_id == task_id).first()
+    db.close()
+
+    if not song or not song.filename:
+        raise HTTPException(404, "Song not ready")
+
+    path = os.path.join(SAVE_DIR, song.filename)
+    return FileResponse(path, media_type="audio/mpeg")
 
 
-# =========================
-# 4️⃣ DOWNLOAD LAGU
-# =========================
-@app.get("/download/{filename}")
-def download_music_file(filename: str):
-    filepath = os.path.join(SAVE_DIR, filename)
-    if not os.path.exists(filepath):
-        raise HTTPException(status_code=404, detail="File not found")
+@app.get("/download/{task_id}")
+def download_song(task_id: str):
+    db = SessionLocal()
+    song = db.query(Song).filter(Song.task_id == task_id).first()
+    db.close()
 
-    return FileResponse(
-        filepath,
-        media_type="audio/mpeg",
-        filename=filename,
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
+    if not song or not song.filename:
+        raise HTTPException(404, "Song not ready")
+
+    path = os.path.join(SAVE_DIR, song.filename)
+    return FileResponse(path, media_type="audio/mpeg", filename=song.filename)
