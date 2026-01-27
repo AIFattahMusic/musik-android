@@ -165,27 +165,38 @@ def generate_status(task_id: str):
 # =====================================================
 # DOWNLOAD MP3
 # =====================================================
-@app.get("/generate/download/{task_id}")
-def download_mp3(task_id: str):
+from fastapi import FastAPI, HTTPException
+import os
+import base64
+
+app = FastAPI()
+
+GENERATED_DIR = "generated"
+lyrics_store = {
+    # contoh
+    # "task123": "Ini lirik lagunya..."
+}
+
+@app.get("/generate/result/{task_id}")
+def get_result(task_id: str):
     path = f"{GENERATED_DIR}/{task_id}.mp3"
 
     if not os.path.exists(path):
-        raise HTTPException(404, "File belum tersedia")
+        raise HTTPException(status_code=404, detail="File belum tersedia")
 
-    return FileResponse(
-        path,
-        media_type="audio/mpeg",
-        filename=f"{task_id}.mp3",
-        "cover_url": f"/generate/cover/{task_id}" )
-from fastapi import FastAPI
-from pydantic import BaseModel
-return {
-    "task_id": task_id,
-    "title": title,
-    "lyrics": lyrics,
-    "cover_url": f"/generate/cover/{task_id}",
-    "audio_url": f"/generate/audio/{task_id}"
-}
+    # baca mp3
+    with open(path, "rb") as f:
+        audio_bytes = f.read()
+
+    audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
+
+    return {
+        "task_id": task_id,
+        "lyrics": lyrics_store.get(task_id, ""),
+        "audio_base64": audio_base64,
+        "audio_mime": "audio/mpeg"
+    }
+
 app = FastAPI()
 
 class Item(BaseModel):
@@ -220,6 +231,7 @@ def db_all():
     cur.close()
     conn.close()
     return rows
+
 
 
 
