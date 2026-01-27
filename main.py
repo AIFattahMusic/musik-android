@@ -1,55 +1,51 @@
-import os, sqlite3
+import sqlite3
 from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
 
 app = FastAPI(title="Musik Android API")
 
 # =========================
-# STORAGE (ANTI PERMISSION ERROR)
+# DATABASE (AMAN DI RENDER)
 # =========================
-if os.path.exists("/data"):
-    DB_DIR = "/data"
-else:
-    DB_DIR = "/tmp"   # fallback aman di Render
-
-DB_PATH = f"{DB_DIR}/musik.db"
+DB_PATH = "musik.db"  # JANGAN pakai /data
 
 
-def db():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
+def get_db():
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
 
 @app.on_event("startup")
 def startup():
-    os.makedirs(DB_DIR, exist_ok=True)
-    c = db()
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS audios (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        audio_id TEXT UNIQUE,
-        title TEXT,
-        tags TEXT,
-        duration REAL,
-        audio_url TEXT,
-        stream_audio_url TEXT,
-        image_url TEXT,
-        created_at TEXT
-    )
+    conn = get_db()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS audios (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            audio_id TEXT UNIQUE,
+            title TEXT,
+            tags TEXT,
+            duration REAL,
+            audio_url TEXT,
+            stream_audio_url TEXT,
+            image_url TEXT,
+            created_at TEXT
+        )
     """)
-    c.commit()
-    c.close()
+    conn.commit()
+    conn.close()
 
 
+# =========================
+# ROOT (CEK API HIDUP)
+# =========================
 @app.get("/")
 def root():
     return {
         "status": "ok",
         "service": "Musik Android API",
-        "db_path": DB_PATH,
         "endpoints": {
-            "callback": ["POST /callback", "POST /callback/suno"],
+            "callback": "POST /callback/suno",
             "list": "GET /audios",
             "detail": "GET /audio/{audio_id}"
         }
@@ -57,17 +53,86 @@ def root():
 
 
 # =========================
-# CALLBACK HANDLER
+# CALLBACK SUNO (WAJIB ADA)
 # =========================
-async def handle_callback(req: Request):
+@app.post("/callback/suno")
+async def callback_suno(request: Request):
     try:
-        payload = await req.json()
-    except:
+        payload = await request.json()
+    except Exception:
         return {"ok": True}
 
     items = (payload.get("data") or {}).get("data") or []
     if not items:
-        return {"
+        return {"ok": True}
+
+    conn = get_db()
+    for item in items:
+        conn.execute("""
+            INSERT INTO audios (
+                audio_id,
+                title,
+                tags,
+                duration,
+                audio_url,
+                stream_audio_url,
+                image_url,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(audio_id) DO UPDATE SET
+                title=excluded.title,
+                tags=excluded.tags,
+                duration=excluded.duration,
+                audio_url=excluded.audio_url,
+                stream_audio_url=excluded.stream_audio_url,
+                image_url=excluded.image_url,
+                created_at=excluded.created_at
+        """, (
+            item.get("id"),
+            item.get("title"),
+            item.get("tags"),
+            item.get("duration"),
+            item.get("audio_url"),
+            item.get("stream_audio_url"),
+            item.get("image_url"),
+            datetime.utcnow().isoformat()
+        ))
+    conn.commit()
+    conn.close()
+
+    return {"success": True}
 
 
+# =========================
+# API ANDROID
+# =========================
+@app.get("/audios")
+def list_audios():
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT audio_id, title, tags, duration,
+               audio_url, stream_audio_url, image_url
+        FROM audios
+        ORDER BY id DESC
+    """).fetchall()
+    conn.close()
 
+    return {
+        "count": len(rows),
+        "data": [dict(r) for r in rows]
+    }
+
+
+@app.get("/audio/{audio_id}")
+def audio_detail(audio_id: str):
+    conn = get_db()
+    row = conn.execute(
+        "SELECT * FROM audios WHERE audio_id=?",
+        (audio_id,)
+    ).fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Audio not found")
+
+    return dict(row)
