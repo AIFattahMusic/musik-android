@@ -1,8 +1,7 @@
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
 import requests
-import threading
 import os
 
 app = FastAPI()
@@ -11,8 +10,7 @@ app = FastAPI()
 # CONFIG
 # ======================
 API_URL_GENERATE = "https://api.sunoapi.org/api/v1/generate"
-API_URL_EXTEND   = "https://api.sunoapi.org/api/v1/extend"
-CALLBACK_URL     = "https://musik-android.onrender.com/music/callback"
+CALLBACK_URL = "https://musik-android.onrender.com/music/callback"
 
 SAVE_DIR = "outputs"
 os.makedirs(SAVE_DIR, exist_ok=True)
@@ -28,23 +26,33 @@ class GenerateRequest(BaseModel):
     title: str | None = None
     vocalGender: str | None = None
 
-class ExtendRequest(BaseModel):
-    audioId: str
-    prompt: str | None = None
-    title: str | None = None
-    continueAt: float | None = None
-
 # ======================
 # HEADERS
 # ======================
 def get_headers():
     token = os.getenv("SUNO_TOKEN")
     if not token:
-        raise HTTPException(500, "API token belum diset")
+        print("❌ TOKEN TIDAK ADA")
+        raise HTTPException(status_code=500, detail="SUNO_TOKEN belum diset")
+
     return {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
     }
+
+# ======================
+# ROOT (TEST)
+# ======================
+@app.get("/")
+def root():
+    return {"status": "ok"}
+
+# ======================
+# DEBUG TOKEN
+# ======================
+@app.get("/debug/token")
+def debug_token():
+    return {"token_loaded": bool(os.getenv("SUNO_TOKEN"))}
 
 # ======================
 # GENERATE MUSIC
@@ -62,6 +70,8 @@ def generate_music(body: GenerateRequest):
         "callBackUrl": CALLBACK_URL
     }
 
+    print("➡️ PAYLOAD:", payload)
+
     response = requests.post(
         API_URL_GENERATE,
         json=payload,
@@ -69,8 +79,14 @@ def generate_music(body: GenerateRequest):
         timeout=30
     )
 
+    print("⬅️ STATUS:", response.status_code)
+    print("⬅️ BODY:", response.text)
+
     if response.status_code != 200:
-        raise HTTPException(response.status_code, response.text)
+        raise HTTPException(
+            status_code=500,
+            detail=response.text
+        )
 
     data = response.json()
 
@@ -80,13 +96,13 @@ def generate_music(body: GenerateRequest):
     )
 
     if not task_id:
-        raise HTTPException(500, f"API tidak mengembalikan taskId: {data}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Tidak ada taskId dari API: {data}"
+        )
 
     music_tasks[task_id] = {
-        "status": "PENDING",
-        "audioUrl": None,
-        "coverUrl": None,
-        "duration": None
+        "status": "PENDING"
     }
 
     return {
@@ -96,14 +112,32 @@ def generate_music(body: GenerateRequest):
     }
 
 # ======================
-# EXTEND MUSIC
+# CHECK STATUS
 # ======================
-@app.post("/music/extend")
-def extend_music(body: ExtendRequest):
-    headers = get_headers()
+@app.get("/music/status/{task_id}")
+def check_status(task_id: str):
+    task = music_tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, "Task ID tidak ditemukan")
 
-    payload = {
-        "defaultParamFlag": True,
+    return {
+        "taskId": task_id,
+        **task
+    }
+
+# ======================
+# CALLBACK
+# ======================
+@app.post("/music/callback")
+async def music_callback(request: Request):
+    payload = await request.json()
+    print("📥 CALLBACK:", payload)
+
+    task_id = payload.get("taskId")
+    if task_id:
+        music_tasks[task_id] = payload
+
+    return JSONResponse({"status": "ok"})        "defaultParamFlag": True,
         "audioId": body.audioId,
         "model": "V4_5ALL",
         "callBackUrl": CALLBACK_URL,
@@ -197,3 +231,4 @@ def download(task_id: str):
         raise HTTPException(404, "Belum siap")
 
     return FileResponse(path, filename=task_id + ".mp3")
+
