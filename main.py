@@ -1,109 +1,191 @@
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse, FileResponse
-import os
+from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel
 import requests
-import threading
-import sqlite3
+import os
 
 app = FastAPI()
 
-# =====================
+# ======================
 # CONFIG
-# =====================
-SAVE_DIR = "generated_music"
-os.makedirs(SAVE_DIR, exist_ok=True)
+# ======================
+SUNO_API_URL_GENERATE = "https://api.sunoapi.org/api/v1/generate"
+SUNO_API_URL_EXTEND = "https://api.sunoapi.org/api/v1/generate/extend"
+CALLBACK_URL = "https://musik-android.onrender.com/suno/callback"
 
-SUNO_API_KEY = os.environ.get("SUNO_API_KEY")
-SUNO_URL = "https://api.sunoapi.org/api/v1/generate"
-CALLBACK_URL = "https://musik-android.onrender.com/generate-music-callback"
+# 🔥 FALLBACK TOKEN (INI KUNCI)
+SUNO_API_TOKEN = (
+    os.getenv("SUNO_API_TOKEN")
+    or os.getenv("SUNO_TOKEN")
+)
 
-DB_PATH = "music.db"
+def get_headers():
+    if not SUNO_API_TOKEN:
+        raise HTTPException(
+            status_code=500,
+            detail="SUNO_API_TOKEN belum terbaca di environment"
+        )
 
-# =====================
-# DATABASE
-# =====================
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute(
-        "CREATE TABLE IF NOT EXISTS songs ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "task_id TEXT UNIQUE, "
-        "status TEXT, "
-        "filename TEXT)"
-    )
-    conn.commit()
-    conn.close()
-
-init_db()
-
-# =====================
-# ROOT
-# =====================
-@app.get("/")
-def root():
-    return {"status": "ok"}
-
-# =====================
-# GENERATE
-# =====================
-@app.post("/generate")
-def generate():
-    if not SUNO_API_KEY:
-        raise HTTPException(500, "SUNO_API_KEY belum diset")
-
-    payload = {
-        "prompt": "chill lo-fi instrumental",
-        "make_instrumental": True,
-        "callback_url": CALLBACK_URL
-    }
-
-    headers = {
-        "Authorization": f"Bearer {SUNO_API_KEY}",
+    return {
+        "Authorization": f"Bearer {SUNO_API_TOKEN}",
         "Content-Type": "application/json"
     }
 
-    r = requests.post(SUNO_URL, json=payload, headers=headers)
-    data = r.json()
+# ======================
+# IN-MEMORY DB
+# ======================
+music_tasks = {}
 
-    task_id = data.get("data", {}).get("task_id")
-    if not task_id:
-        raise HTTPException(500, "Generate gagal")
+# ======================
+# SCHEMAS
+# ======================
+class GenerateRequest(BaseModel):
+    prompt: str
+    style: str | None = "Pop"
+    title: str | None = "My Song"
+    vocalGender: str | None = None
 
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT OR IGNORE INTO songs (task_id, status, filename) VALUES (?, ?, ?)",
-        (task_id, "pending", "")
+
+class ExtendRequest(BaseModel):
+    audioId: str
+    continueAt: int = 60
+    prompt: str | None = None
+    title: str | None = None
+
+# ======================
+# HEALTH CHECK
+# ======================
+@app.get("/")
+def health():
+    return {
+        "status": "ok",
+        "token_loaded": bool(SUNO_API_TOKEN)
+    }
+
+# ======================
+# GENERATE MUSIC (BARU)
+# ======================
+@app.post("/suno/generate")
+def generate_music(body: GenerateRequest):
+    headers = get_headers()
+
+    payload = {
+        "prompt": body.prompt,
+        "style": body.style,
+        "title": body.title,
+        "vocalGender": body.vocalGender,
+        "model": "V4_5ALL",
+        "callBackUrl": CALLBACK_URL
+    }
+
+    response = requests.post(
+        SUNO_API_URL_GENERATE,
+        json=payload,
+        headers=headers,
+        timeout=30
     )
-    conn.commit()
-    conn.close()
 
-    return {"task_id": task_id}
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=response.text
+        )
 
-# =====================
-# DOWNLOAD (BACKGROUND)
-# =====================
-def download_audio(task_id, musics):
-    for music in musics:
-        audio_url = music.get("audio_url")
-        if not audio_url:
-            continue
+    data = response.json()
+    task_id = data.get("taskId")
 
-        r = requests.get(audio_url)
-        if r.status_code == 200:
-            filename = task_id + ".mp3"
-            path = os.path.join(SAVE_DIR, filename)
+    music_tasks[task_id] = {
+        "status": "PENDING",
+        "audioUrl": None,
+        "coverUrl": None,
+        "duration": None
+    }
 
-            with open(path, "wb") as f:
-                f.write(r.content)
+    return {
+        "success": True,
+        "taskId": task_id,
+        "status": "PENDING"
+    }
 
-            conn = sqlite3.connect(DB_PATH)
-            cur = conn.cursor()
-            cur.execute(
-                "UPDATE songs SET status=?, filename=? WHERE task_id=?",
-                ("completed", filename, task_id)
-            )
+# ======================
+# EXTEND MUSIC
+# ======================
+@app.post("/suno/extend")
+def extend_music(body: ExtendRequest):
+    headers = get_headers()
+
+    payload = {
+        "defaultParamFlag": True,
+        "audioId": body.audioId,
+        "model": "V4_5ALL",
+        "callBackUrl": CALLBACK_URL,
+        "prompt": body.prompt or "Extend the music smoothly",
+        "title": body.title or "Extended Music",
+        "continueAt": body.continueAt,
+        "styleWeight": 0.65,
+        "audioWeight": 0.65,
+        "weirdnessConstraint": 0.65
+    }
+
+    response = requests.post(
+        SUNO_API_URL_EXTEND,
+        json=payload,
+        headers=headers,
+        timeout=30
+    )
+
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=response.text
+        )
+
+    data = response.json()
+    task_id = data.get("taskId")
+
+    music_tasks[task_id] = {
+        "status": "PENDING",
+        "audioUrl": None,
+        "coverUrl": None,
+        "duration": None
+    }
+
+    return {
+        "success": True,
+        "taskId": task_id,
+        "status": "PENDING"
+    }
+
+# ======================
+# CHECK STATUS
+# ======================
+@app.get("/suno/status/{task_id}")
+def check_status(task_id: str):
+    task = music_tasks.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=404,
+            detail="Task ID tidak ditemukan"
+        )
+
+    return {
+        "taskId": task_id,
+        **task
+    }
+
+# ======================
+# CALLBACK
+# ======================
+@app.post("/suno/callback")
+async def suno_callback(request: Request):
+    payload = await request.json()
+
+    print("=== SUNO CALLBACK ===")
+    print(payload)
+
+    task_id = payload.get("taskId")
+
+    if task_id not in music_tasks:
+        music_tasks[task_id]            )
             conn.commit()
             conn.close()
 
@@ -146,3 +228,4 @@ def download(task_id: str):
         raise HTTPException(404, "Belum siap")
 
     return FileResponse(path, filename=task_id + ".mp3")
+
