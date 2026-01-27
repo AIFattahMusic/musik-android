@@ -1,18 +1,17 @@
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
-from sqlalchemy import Column, Integer, String, DateTime, create_engine
+from sqlalchemy import Column, Integer, String, create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
-from datetime import datetime
 import os, threading, requests
 
-# ======================
+# =====================
 # APP
-# ======================
+# =====================
 app = FastAPI()
 
-# ======================
+# =====================
 # CONFIG
-# ======================
+# =====================
 SAVE_DIR = "generated_music"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
@@ -20,16 +19,16 @@ SUNO_API_KEY = os.environ.get("SUNO_API_KEY")
 SUNO_URL = "https://api.sunoapi.org/api/v1/generate"
 CALLBACK_URL = "https://musik-android.onrender.com/generate-music-callback"
 
-# ======================
+# =====================
 # DATABASE (SQLite)
-# ======================
+# =====================
 DATABASE_URL = "sqlite:///./music.db"
 
 engine = create_engine(
-    DATABASE_URL, connect_args={"check_same_thread": False}
+    DATABASE_URL,
+    connect_args={"check_same_thread": False}
 )
 SessionLocal = sessionmaker(bind=engine)
-
 Base = declarative_base()
 
 
@@ -39,20 +38,21 @@ class Song(Base):
     id = Column(Integer, primary_key=True)
     task_id = Column(String, unique=True, index=True)
     prompt = Column(String)
-    status = Column(String, default="pending")
+    status = Column(String)
     filename = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 Base.metadata.create_all(bind=engine)
 
-# ======================
+# =====================
 # GENERATE 1 SONG
-# ======================
+# =====================
 @app.post("/generate")
-def generate_song(prompt: str):
+def generate_song():
     if not SUNO_API_KEY:
         raise HTTPException(500, "SUNO_API_KEY belum diset")
+
+    prompt = "chill lo-fi instrumental, relaxing vibe"
 
     payload = {
         "prompt": prompt,
@@ -73,16 +73,20 @@ def generate_song(prompt: str):
         raise HTTPException(500, "Generate gagal")
 
     db = SessionLocal()
-    song = Song(task_id=task_id, prompt=prompt, status="pending")
+    song = Song(
+        task_id=task_id,
+        prompt=prompt,
+        status="pending"
+    )
     db.add(song)
     db.commit()
     db.close()
 
     return {"task_id": task_id, "status": "pending"}
 
-# ======================
+# =====================
 # CALLBACK SUNO
-# ======================
+# =====================
 def download_music(task_id, musics):
     db = SessionLocal()
     song = db.query(Song).filter(Song.task_id == task_id).first()
@@ -117,6 +121,7 @@ async def generate_music_callback(request: Request):
     task_id = data.get("task_id")
     musics = data.get("data", [])
 
+    # WAJIB balas cepat
     response = JSONResponse({"status": "received"}, status_code=200)
 
     if code == 200 and callback_type == "complete":
@@ -128,9 +133,9 @@ async def generate_music_callback(request: Request):
 
     return response
 
-# ======================
+# =====================
 # LIST SONGS
-# ======================
+# =====================
 @app.get("/songs")
 def list_songs():
     db = SessionLocal()
@@ -140,16 +145,15 @@ def list_songs():
     return [
         {
             "task_id": s.task_id,
-            "prompt": s.prompt,
             "status": s.status,
             "filename": s.filename
         }
         for s in songs
     ]
 
-# ======================
+# =====================
 # PLAY & DOWNLOAD
-# ======================
+# =====================
 @app.get("/play/{task_id}")
 def play_song(task_id: str):
     db = SessionLocal()
@@ -159,8 +163,10 @@ def play_song(task_id: str):
     if not song or not song.filename:
         raise HTTPException(404, "Song not ready")
 
-    path = os.path.join(SAVE_DIR, song.filename)
-    return FileResponse(path, media_type="audio/mpeg")
+    return FileResponse(
+        os.path.join(SAVE_DIR, song.filename),
+        media_type="audio/mpeg"
+    )
 
 
 @app.get("/download/{task_id}")
@@ -172,5 +178,13 @@ def download_song(task_id: str):
     if not song or not song.filename:
         raise HTTPException(404, "Song not ready")
 
-    path = os.path.join(SAVE_DIR, song.filename)
-    return FileResponse(path, media_type="audio/mpeg", filename=song.filename)
+    return FileResponse(
+        os.path.join(SAVE_DIR, song.filename),
+        media_type="audio/mpeg",
+        filename=song.filename
+    )
+
+
+@app.get("/")
+def root():
+    return {"status": "ok"}
