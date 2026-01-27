@@ -1,13 +1,17 @@
 import sqlite3
+import uuid
 from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
 
-app = FastAPI(title="Musik Android API")
+app = FastAPI(
+    title="Musik Android API",
+    version="1.0.0"
+)
 
 # =========================
 # DATABASE (AMAN DI RENDER)
 # =========================
-DB_PATH = "musik.db"  # JANGAN pakai /data
+DB_PATH = "musik.db"
 
 
 def get_db():
@@ -20,24 +24,22 @@ def get_db():
 def startup():
     conn = get_db()
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS audios (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            audio_id TEXT UNIQUE,
-            title TEXT,
-            tags TEXT,
-            duration REAL,
-            audio_url TEXT,
-            stream_audio_url TEXT,
-            image_url TEXT,
-            created_at TEXT
-        )
+    CREATE TABLE IF NOT EXISTS audios (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id TEXT,
+        audio_id TEXT,
+        title TEXT,
+        prompt TEXT,
+        audio_url TEXT,
+        created_at TEXT
+    )
     """)
     conn.commit()
     conn.close()
 
 
 # =========================
-# ROOT (CEK API HIDUP)
+# ROOT
 # =========================
 @app.get("/")
 def root():
@@ -45,7 +47,11 @@ def root():
         "status": "ok",
         "service": "Musik Android API",
         "endpoints": {
-            "callback": "POST /callback/suno",
+            "generate": "POST /generate",
+            "callback": [
+                "POST /callback",
+                "POST /callback/suno"
+            ],
             "list": "GET /audios",
             "detail": "GET /audio/{audio_id}"
         }
@@ -53,49 +59,66 @@ def root():
 
 
 # =========================
-# CALLBACK SUNO (WAJIB ADA)
+# GENERATE (ANDROID PAKAI)
 # =========================
-@app.post("/callback/suno")
-async def callback_suno(request: Request):
+@app.post("/generate")
+def generate(payload: dict):
+    prompt = payload.get("prompt")
+    if not prompt:
+        raise HTTPException(400, "prompt is required")
+
+    task_id = str(uuid.uuid4())
+
+    conn = get_db()
+    conn.execute("""
+        INSERT INTO audios (task_id, prompt, created_at)
+        VALUES (?, ?, ?)
+    """, (
+        task_id,
+        prompt,
+        datetime.utcnow().isoformat()
+    ))
+    conn.commit()
+    conn.close()
+
+    return {
+        "success": True,
+        "task_id": task_id,
+        "message": "Task created. Waiting for callback."
+    }
+
+
+# =========================
+# CALLBACK HANDLER (UMUM)
+# =========================
+async def handle_callback(req: Request):
     try:
-        payload = await request.json()
+        payload = await req.json()
     except Exception:
         return {"ok": True}
 
-    items = (payload.get("data") or {}).get("data") or []
-    if not items:
+    data = payload.get("data") or {}
+    task_id = data.get("task_id")
+    items = data.get("data") or []
+
+    if not task_id or not items:
         return {"ok": True}
 
     conn = get_db()
     for item in items:
         conn.execute("""
-            INSERT INTO audios (
-                audio_id,
-                title,
-                tags,
-                duration,
-                audio_url,
-                stream_audio_url,
-                image_url,
-                created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(audio_id) DO UPDATE SET
-                title=excluded.title,
-                tags=excluded.tags,
-                duration=excluded.duration,
-                audio_url=excluded.audio_url,
-                stream_audio_url=excluded.stream_audio_url,
-                image_url=excluded.image_url,
-                created_at=excluded.created_at
+        UPDATE audios SET
+            audio_id = ?,
+            title = ?,
+            audio_url = ?,
+            created_at = ?
+        WHERE task_id = ?
         """, (
             item.get("id"),
             item.get("title"),
-            item.get("tags"),
-            item.get("duration"),
             item.get("audio_url"),
-            item.get("stream_audio_url"),
-            item.get("image_url"),
-            datetime.utcnow().isoformat()
+            datetime.utcnow().isoformat(),
+            task_id
         ))
     conn.commit()
     conn.close()
@@ -104,15 +127,31 @@ async def callback_suno(request: Request):
 
 
 # =========================
-# API ANDROID
+# CALLBACK (GENERIC)
+# =========================
+@app.post("/callback")
+async def callback(req: Request):
+    return await handle_callback(req)
+
+
+# =========================
+# CALLBACK SUNO (INI YANG SERING DIPAKAI)
+# =========================
+@app.post("/callback/suno")
+async def callback_suno(req: Request):
+    return await handle_callback(req)
+
+
+# =========================
+# LIST AUDIO (ANDROID)
 # =========================
 @app.get("/audios")
-def list_audios():
+def audios():
     conn = get_db()
     rows = conn.execute("""
-        SELECT audio_id, title, tags, duration,
-               audio_url, stream_audio_url, image_url
+        SELECT audio_id, title, audio_url, created_at
         FROM audios
+        WHERE audio_id IS NOT NULL
         ORDER BY id DESC
     """).fetchall()
     conn.close()
@@ -123,6 +162,9 @@ def list_audios():
     }
 
 
+# =========================
+# DETAIL AUDIO
+# =========================
 @app.get("/audio/{audio_id}")
 def audio_detail(audio_id: str):
     conn = get_db()
@@ -133,6 +175,7 @@ def audio_detail(audio_id: str):
     conn.close()
 
     if not row:
-        raise HTTPException(status_code=404, detail="Audio not found")
+        raise HTTPException(404, "Audio not found")
 
     return dict(row)
+
