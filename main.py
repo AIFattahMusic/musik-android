@@ -1,116 +1,74 @@
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse
+import httpx
 import os
 import logging
-import requests
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
 
-# =====================================================
-# CONFIG
-# =====================================================
-SUNO_API_TOKEN = os.getenv("SUNO_API_TOKEN", "")
-SUNO_BASE_URL = "https://api.sunoapi.org"
+app = FastAPI()
 
-APP_NAME = "Suno Music API"
+# logging setup
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# =====================================================
-# LOGGING
-# =====================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
-)
+SAVE_DIR = "generated_music"
+os.makedirs(SAVE_DIR, exist_ok=True)
 
-# =====================================================
-# FASTAPI APP
-# =====================================================
-app = FastAPI(title=APP_NAME, version="1.0.0")
 
-# =====================================================
-# ROOT (CEK SERVER)
-# =====================================================
-@app.get("/")
-def root():
-    return {
-        "status": "ok",
-        "service": APP_NAME,
-        "endpoints": {
-            "generate": "POST /generate",
-            "status": "GET /status/{task_id}"
-        }
-    }
-
-# =====================================================
-# GENERATE LAGU (INI YANG BIKIN LAGU)
-# =====================================================
-@app.post("/generate")
-async def generate_music(request: Request):
+@app.post("/generate-music-callback")
+async def generate_music_callback(request: Request):
     try:
-        body = await request.json()
-    except:
-        return JSONResponse(
-            {"error": "invalid_json"},
-            status_code=400
-        )
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    prompt = body.get("prompt")
-    if not prompt:
-        return JSONResponse(
-            {"error": "prompt_required"},
-            status_code=400
-        )
+    code = payload.get("code")
+    msg = payload.get("msg", "")
+    data = payload.get("data")
 
-    payload = {
-        "customMode": True,
-        "instrumental": body.get("instrumental", False),
-        "model": body.get("model", "V4_5ALL"),
-        "prompt": prompt,
-        "style": body.get("style", "Pop"),
-        "title": body.get("title", "Generated Song"),
-        "vocalGender": body.get("vocalGender", "f")
-    }
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Invalid data format")
 
-    headers = {
-        "Authorization": f"Bearer {SUNO_API_TOKEN}",
-        "Content-Type": "application/json"
-    }
+    task_id = data.get("task_id")
+    callback_type = data.get("callbackType")
+    musics = data.get("data")
 
-    try:
-        r = requests.post(
-            f"{SUNO_BASE_URL}/api/v1/generate",
-            json=payload,
-            headers=headers,
-            timeout=30
-        )
-        return JSONResponse(r.json(), status_code=r.status_code)
+    if not task_id or not isinstance(musics, list):
+        raise HTTPException(status_code=400, detail="Missing task_id or music list")
 
-    except Exception as e:
-        logging.exception("Generate error")
-        return JSONResponse(
-            {"error": "suno_generate_failed", "message": str(e)},
-            status_code=500
-        )
+    logger.info("=== CALLBACK MASUK ===")
+    logger.info(f"Task ID: {task_id}")
+    logger.info(f"Type: {callback_type}")
+    logger.info(f"Code: {code}")
+    logger.info(f"Message: {msg}")
 
-# =====================================================
-# CEK STATUS LAGU (AMBIL MP3)
-# =====================================================
-@app.get("/status/{task_id}")
-def check_status(task_id: str):
-    headers = {
-        "Authorization": f"Bearer {SUNO_API_TOKEN}"
-    }
+    if code != 200:
+        logger.error(f"Generate gagal: {msg}")
+        return JSONResponse({"status": "failed", "message": msg})
 
-    try:
-        r = requests.get(
-            f"{SUNO_BASE_URL}/api/v1/generate/record-info",
-            params={"taskId": task_id},
-            headers=headers,
-            timeout=20
-        )
-        return JSONResponse(r.json(), status_code=r.status_code)
+    async with httpx.AsyncClient(timeout=30) as client:
+        for i, music in enumerate(musics, start=1):
+            title = music.get("title", f"music_{i}")
+            audio_url = music.get("audio_url")
 
-    except Exception as e:
-        logging.exception("Status error")
-        return JSONResponse(
-            {"error": "status_failed", "message": str(e)},
-            status_code=500
-        )
+            logger.info(f"Music #{i}: {title}")
+
+            if not audio_url:
+                logger.warning("Audio URL kosong, dilewati")
+                continue
+
+            filename = f"{task_id}_{i}.mp3"
+            filepath = os.path.join(SAVE_DIR, filename)
+
+            try:
+                r = await client.get(audio_url)
+                r.raise_for_status()
+
+                with open(filepath, "wb") as f:
+                    f.write(r.content)
+
+                logger.info(f"Saved: {filepath}")
+
+            except Exception as e:
+                logger.error(f"Download error ({audio_url}): {e}")
+
+    return JSONResponse({"status": "received"})
