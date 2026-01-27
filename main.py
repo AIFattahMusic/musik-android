@@ -31,7 +31,7 @@ if not SUNO_TOKEN:
     raise RuntimeError("SUNO_TOKEN belum diset")
 
 SUNO_GENERATE_URL = "https://api.sunoapi.org/api/v1/generate"
-SUNO_STATUS_URL = "https://api.sunoapi.org/api/v1/status"
+SUNO_RECORD_INFO_URL = "https://api.sunoapi.org/api/v1/generate/record-info"
 
 HEADERS = {
     "Authorization": f"Bearer {SUNO_TOKEN}",
@@ -95,15 +95,14 @@ def generate_music(data: GenerateRequest):
 # =========================
 @app.post("/callback")
 async def callback(req: Request):
-    # Suno akan hit endpoint ini saat selesai
-    payload = await req.json()
+    await req.json()
     return {"status": "received"}
 
 # =========================
-# STATUS
+# STATUS (BENAR)
 # =========================
 @app.get("/generate/status/{task_id}")
-def check_status(task_id: str):
+def generate_status(task_id: str):
     mp3_path = f"{GENERATED_DIR}/{task_id}.mp3"
 
     # Jika file sudah ada
@@ -113,60 +112,54 @@ def check_status(task_id: str):
             "download_url": f"{BASE_URL}/generate/download/{task_id}",
         }
 
-    # Cek ke Suno
     try:
         r = requests.get(
-            f"{SUNO_STATUS_URL}/{task_id}",
+            SUNO_RECORD_INFO_URL,
             headers=HEADERS,
+            params={"taskId": task_id},
             timeout=30,
         )
-    except requests.RequestException as e:
-        raise HTTPException(502, str(e))
-
-    # ⚠️ PENTING: 404 dari Suno = masih pending
-    if r.status_code == 404:
+    except requests.RequestException:
         return {"status": "processing"}
 
     if r.status_code != 200:
-        raise HTTPException(502, r.text)
+        return {"status": "processing"}
 
     res = r.json()
-    data = res.get("data") or []
-
+    data = res.get("data")
     if not data:
         return {"status": "processing"}
 
-    item = data[0]
-    state = (item.get("state") or item.get("status") or "").lower()
+    status = data.get("status", "").upper()
 
-    audio_url = (
-        item.get("audio_url")
-        or item.get("audioUrl")
-        or item.get("audio")
-    )
-
-    if state in {"success", "succeeded", "done"} and audio_url:
+    if status not in {"SUCCESS", "FIRST_SUCCESS", "TEXT_SUCCESS"}:
         return {
-            "status": "done",
-            "download_url": f"{BASE_URL}/generate/download/{task_id}",
+            "status": "processing",
+            "raw_status": status,
         }
 
-    if state in {"fail", "failed", "error"}:
-        return {"status": "failed"}
+    audio_url = (
+        data.get("response", {})
+        .get("sunoData", {})
+        .get("audioUrl")
+    )
+
+    if not audio_url:
+        return {"status": "processing"}
 
     return {
-        "status": "processing",
-        "raw_state": state,
+        "status": "done",
+        "download_url": f"{BASE_URL}/generate/download/{task_id}",
     }
 
 # =========================
-# DOWNLOAD (SMART)
+# DOWNLOAD (SMART & FINAL)
 # =========================
 @app.get("/generate/download/{task_id}")
 def download_mp3(task_id: str):
     mp3_path = f"{GENERATED_DIR}/{task_id}.mp3"
 
-    # 1. Kalau sudah ada → kirim file
+    # 1. File sudah ada
     if os.path.exists(mp3_path):
         return FileResponse(
             mp3_path,
@@ -174,52 +167,54 @@ def download_mp3(task_id: str):
             filename=f"{task_id}.mp3",
         )
 
-    # 2. Kalau belum → cek status Suno
+    # 2. Ambil info dari Suno (BENAR)
     try:
         r = requests.get(
-            f"{SUNO_STATUS_URL}/{task_id}",
+            SUNO_RECORD_INFO_URL,
             headers=HEADERS,
+            params={"taskId": task_id},
             timeout=30,
         )
-    except requests.RequestException as e:
-        raise HTTPException(502, str(e))
-
-    if r.status_code == 404:
+    except requests.RequestException:
         return JSONResponse(
             status_code=202,
             content={"status": "processing"},
         )
 
     if r.status_code != 200:
-        raise HTTPException(502, r.text)
+        return JSONResponse(
+            status_code=202,
+            content={"status": "processing"},
+        )
 
     res = r.json()
-    data = res.get("data") or []
-
+    data = res.get("data")
     if not data:
         return JSONResponse(
             status_code=202,
             content={"status": "processing"},
         )
 
-    item = data[0]
-    state = (item.get("state") or item.get("status") or "").lower()
-    audio_url = (
-        item.get("audio_url")
-        or item.get("audioUrl")
-        or item.get("audio")
-    )
-
-    if state not in {"success", "succeeded", "done"}:
+    status = data.get("status", "").upper()
+    if status not in {"SUCCESS", "FIRST_SUCCESS", "TEXT_SUCCESS"}:
         return JSONResponse(
             status_code=202,
-            content={"status": "processing", "state": state},
+            content={"status": "processing", "raw_status": status},
         )
 
-    if not audio_url:
-        raise HTTPException(500, "Audio URL kosong")
+    audio_url = (
+        data.get("response", {})
+        .get("sunoData", {})
+        .get("audioUrl")
+    )
 
-    # 3. Download dari Suno
+    if not audio_url:
+        return JSONResponse(
+            status_code=202,
+            content={"status": "processing"},
+        )
+
+    # 3. Download MP3
     audio_resp = requests.get(audio_url, timeout=60)
     if audio_resp.status_code != 200:
         raise HTTPException(500, "Gagal download audio")
