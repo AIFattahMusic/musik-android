@@ -147,7 +147,7 @@ async def music_callback(request: Request):
         "styleWeight": 0.65,
         "audioWeight": 0.65,
         "weirdnessConstraint": 0.65
-    }
+    
 
     response = requests.post(
         API_URL_EXTEND,
@@ -231,4 +231,5 @@ def download(task_id: str):
         raise HTTPException(404, "Belum siap")
 
     return FileResponse(path, filename=task_id + ".mp3")
+
 
