@@ -2,16 +2,18 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
 from sqlalchemy import Column, Integer, String, create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
-import os, threading, requests
+import os
+import threading
+import requests
 
-# =====================
+# =========================
 # APP
-# =====================
+# =========================
 app = FastAPI()
 
-# =====================
+# =========================
 # CONFIG
-# =====================
+# =========================
 SAVE_DIR = "generated_music"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
@@ -19,9 +21,9 @@ SUNO_API_KEY = os.environ.get("SUNO_API_KEY")
 SUNO_URL = "https://api.sunoapi.org/api/v1/generate"
 CALLBACK_URL = "https://musik-android.onrender.com/generate-music-callback"
 
-# =====================
+# =========================
 # DATABASE (SQLite)
-# =====================
+# =========================
 DATABASE_URL = "sqlite:///./music.db"
 
 engine = create_engine(
@@ -39,14 +41,14 @@ class Song(Base):
     task_id = Column(String, unique=True, index=True)
     prompt = Column(String)
     status = Column(String)
-    filename = Column(String, nullable=True)
+    filename = Column(String)
 
 
 Base.metadata.create_all(bind=engine)
 
-# =====================
+# =========================
 # GENERATE 1 SONG
-# =====================
+# =========================
 @app.post("/generate")
 def generate_song():
     if not SUNO_API_KEY:
@@ -76,7 +78,8 @@ def generate_song():
     song = Song(
         task_id=task_id,
         prompt=prompt,
-        status="pending"
+        status="pending",
+        filename=""
     )
     db.add(song)
     db.commit()
@@ -84,28 +87,36 @@ def generate_song():
 
     return {"task_id": task_id, "status": "pending"}
 
-# =====================
+# =========================
 # CALLBACK SUNO
-# =====================
-def download_music(task_id, musics):
+# =========================
+def download_music(task_id: str, musics: list):
     db = SessionLocal()
     song = db.query(Song).filter(Song.task_id == task_id).first()
+
+    if not song:
+        db.close()
+        return
 
     for music in musics:
         audio_url = music.get("audio_url")
         if not audio_url:
             continue
 
-        r = requests.get(audio_url, timeout=30)
-        if r.status_code == 200:
-            filename = f"{task_id}.mp3"
-            path = os.path.join(SAVE_DIR, filename)
+        try:
+            r = requests.get(audio_url, timeout=30)
+            if r.status_code == 200:
+                filename = f"{task_id}.mp3"
+                filepath = os.path.join(SAVE_DIR, filename)
 
-            with open(path, "wb") as f:
-                f.write(r.content)
+                with open(filepath, "wb") as f:
+                    f.write(r.content)
 
-            song.status = "completed"
-            song.filename = filename
+                song.status = "completed"
+                song.filename = filename
+                db.commit()
+        except Exception as e:
+            song.status = "failed"
             db.commit()
 
     db.close()
@@ -121,7 +132,7 @@ async def generate_music_callback(request: Request):
     task_id = data.get("task_id")
     musics = data.get("data", [])
 
-    # WAJIB balas cepat
+    # WAJIB BALAS CEPAT
     response = JSONResponse({"status": "received"}, status_code=200)
 
     if code == 200 and callback_type == "complete":
@@ -133,9 +144,9 @@ async def generate_music_callback(request: Request):
 
     return response
 
-# =====================
+# =========================
 # LIST SONGS
-# =====================
+# =========================
 @app.get("/songs")
 def list_songs():
     db = SessionLocal()
@@ -145,15 +156,16 @@ def list_songs():
     return [
         {
             "task_id": s.task_id,
+            "prompt": s.prompt,
             "status": s.status,
             "filename": s.filename
         }
         for s in songs
     ]
 
-# =====================
+# =========================
 # PLAY & DOWNLOAD
-# =====================
+# =========================
 @app.get("/play/{task_id}")
 def play_song(task_id: str):
     db = SessionLocal()
