@@ -2,7 +2,7 @@ import os
 import requests
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 # =========================
@@ -12,29 +12,26 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],          # jika pakai credentials → ganti domain spesifik
-    allow_credentials=False,      # FIX: tidak boleh True jika origins "*"
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # =========================
-# BASE URL (PUBLIC)
+# CONFIG
 # =========================
 BASE_URL = os.getenv(
     "BASE_URL",
     "https://musik-android.onrender.com"
 ).rstrip("/")
 
-# =========================
-# SUNO CONFIG
-# =========================
-SUNO_API_CREATE_URL = "https://api.sunoapi.org/api/v1/generate"
-SUNO_API_STATUS_URL = "https://api.sunoapi.org/api/v1/status"
 SUNO_TOKEN = os.getenv("SUNO_TOKEN")
-
 if not SUNO_TOKEN:
     raise RuntimeError("SUNO_TOKEN belum diset")
+
+SUNO_GENERATE_URL = "https://api.sunoapi.org/api/v1/generate"
+SUNO_STATUS_URL = "https://api.sunoapi.org/api/v1/status"
 
 HEADERS = {
     "Authorization": f"Bearer {SUNO_TOKEN}",
@@ -65,23 +62,22 @@ def root():
     return {"status": "ok"}
 
 # =========================
-# GENERATE SONG
+# GENERATE MUSIC
 # =========================
-@app.post("/generate/full-song")
-def generate_full_song(data: GenerateRequest):
+@app.post("/generate")
+def generate_music(data: GenerateRequest):
     payload = {
         "prompt": data.prompt,
         "tags": data.tags,
         "custom_mode": data.custom_mode,
         "instrumental": data.instrumental,
         "model": data.model,
-        # FIX: penamaan callbackUrl
-        "callbackUrl": f"{BASE_URL}/generate/callback",
+        "callbackUrl": f"{BASE_URL}/callback",
     }
 
     try:
         r = requests.post(
-            SUNO_API_CREATE_URL,
+            SUNO_GENERATE_URL,
             headers=HEADERS,
             json=payload,
             timeout=60,
@@ -95,42 +91,44 @@ def generate_full_song(data: GenerateRequest):
     return r.json()
 
 # =========================
-# CALLBACK (WAJIB ADA)
+# CALLBACK (OPTIONAL)
 # =========================
-@app.post("/generate/callback")
-async def generate_callback(req: Request):
+@app.post("/callback")
+async def callback(req: Request):
+    # Suno akan hit endpoint ini saat selesai
     payload = await req.json()
-    # optional: simpan log jika mau
     return {"status": "received"}
 
 # =========================
-# STATUS + AUTO DOWNLOAD
+# STATUS
 # =========================
 @app.get("/generate/status/{task_id}")
-def generate_status(task_id: str):
-    if not task_id:
-        raise HTTPException(400, "task_id tidak valid")
-
+def check_status(task_id: str):
     mp3_path = f"{GENERATED_DIR}/{task_id}.mp3"
 
-    # Jika sudah ada file
+    # Jika file sudah ada
     if os.path.exists(mp3_path):
         return {
             "status": "done",
             "download_url": f"{BASE_URL}/generate/download/{task_id}",
         }
 
+    # Cek ke Suno
     try:
         r = requests.get(
-            f"{SUNO_API_STATUS_URL}/{task_id}",
+            f"{SUNO_STATUS_URL}/{task_id}",
             headers=HEADERS,
             timeout=30,
         )
     except requests.RequestException as e:
         raise HTTPException(502, str(e))
 
+    # ⚠️ PENTING: 404 dari Suno = masih pending
+    if r.status_code == 404:
+        return {"status": "processing"}
+
     if r.status_code != 200:
-        raise HTTPException(500, r.text)
+        raise HTTPException(502, r.text)
 
     res = r.json()
     data = res.get("data") or []
@@ -139,12 +137,7 @@ def generate_status(task_id: str):
         return {"status": "processing"}
 
     item = data[0]
-
-    state = (
-        item.get("state")
-        or item.get("status")
-        or ""
-    ).lower()
+    state = (item.get("state") or item.get("status") or "").lower()
 
     audio_url = (
         item.get("audio_url")
@@ -152,15 +145,7 @@ def generate_status(task_id: str):
         or item.get("audio")
     )
 
-    # SUCCESS → download MP3
     if state in {"success", "succeeded", "done"} and audio_url:
-        audio_resp = requests.get(audio_url, timeout=60)
-        if audio_resp.status_code != 200:
-            raise HTTPException(500, "Gagal download audio")
-
-        with open(mp3_path, "wb") as f:
-            f.write(audio_resp.content)
-
         return {
             "status": "done",
             "download_url": f"{BASE_URL}/generate/download/{task_id}",
@@ -175,17 +160,75 @@ def generate_status(task_id: str):
     }
 
 # =========================
-# DOWNLOAD MP3
+# DOWNLOAD (SMART)
 # =========================
 @app.get("/generate/download/{task_id}")
 def download_mp3(task_id: str):
-    path = f"{GENERATED_DIR}/{task_id}.mp3"
+    mp3_path = f"{GENERATED_DIR}/{task_id}.mp3"
 
-    if not os.path.exists(path):
-        raise HTTPException(404, "File belum tersedia")
+    # 1. Kalau sudah ada → kirim file
+    if os.path.exists(mp3_path):
+        return FileResponse(
+            mp3_path,
+            media_type="audio/mpeg",
+            filename=f"{task_id}.mp3",
+        )
+
+    # 2. Kalau belum → cek status Suno
+    try:
+        r = requests.get(
+            f"{SUNO_STATUS_URL}/{task_id}",
+            headers=HEADERS,
+            timeout=30,
+        )
+    except requests.RequestException as e:
+        raise HTTPException(502, str(e))
+
+    if r.status_code == 404:
+        return JSONResponse(
+            status_code=202,
+            content={"status": "processing"},
+        )
+
+    if r.status_code != 200:
+        raise HTTPException(502, r.text)
+
+    res = r.json()
+    data = res.get("data") or []
+
+    if not data:
+        return JSONResponse(
+            status_code=202,
+            content={"status": "processing"},
+        )
+
+    item = data[0]
+    state = (item.get("state") or item.get("status") or "").lower()
+    audio_url = (
+        item.get("audio_url")
+        or item.get("audioUrl")
+        or item.get("audio")
+    )
+
+    if state not in {"success", "succeeded", "done"}:
+        return JSONResponse(
+            status_code=202,
+            content={"status": "processing", "state": state},
+        )
+
+    if not audio_url:
+        raise HTTPException(500, "Audio URL kosong")
+
+    # 3. Download dari Suno
+    audio_resp = requests.get(audio_url, timeout=60)
+    if audio_resp.status_code != 200:
+        raise HTTPException(500, "Gagal download audio")
+
+    with open(mp3_path, "wb") as f:
+        f.write(audio_resp.content)
 
     return FileResponse(
-        path,
+        mp3_path,
         media_type="audio/mpeg",
         filename=f"{task_id}.mp3",
     )
