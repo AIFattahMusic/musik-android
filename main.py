@@ -1,144 +1,132 @@
-import os
-import sqlite3
+import os, sqlite3
 from datetime import datetime
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request, HTTPException
 
 app = FastAPI(title="Musik Android API")
 
-# =========================
-# Render Disk Path (PENTING)
-# =========================
-DB_PATH = "/data/musik.db"  # Render persistent disk
+DB_DIR = "/data"
+DB_PATH = f"{DB_DIR}/musik.db"
 
 
-def init_db():
-    os.makedirs("/data", exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS audio_results (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            task_id TEXT,
-            audio_id TEXT UNIQUE,
-            title TEXT,
-            tags TEXT,
-            duration REAL,
-            audio_url TEXT,
-            stream_audio_url TEXT,
-            image_url TEXT,
-            model_name TEXT,
-            prompt TEXT,
-            create_time TEXT,
-            created_at TEXT
-        )
+def db():
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL;")
+    return conn
+
+
+@app.on_event("startup")
+def startup():
+    os.makedirs(DB_DIR, exist_ok=True)
+    c = db()
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS audios (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        audio_id TEXT UNIQUE,
+        title TEXT,
+        tags TEXT,
+        duration REAL,
+        audio_url TEXT,
+        stream_audio_url TEXT,
+        image_url TEXT,
+        created_at TEXT
+    )
     """)
-    conn.commit()
-    conn.close()
+    c.commit()
+    c.close()
 
 
-init_db()
-
-
-# =========================
-# Health Check (WAJIB)
-# =========================
 @app.get("/")
-def health():
-    return {"status": "ok", "platform": "render"}
+def root():
+    return {
+        "status": "ok",
+        "service": "Musik Android API",
+        "endpoints": {
+            "callback": [
+                "POST /callback",
+                "POST /callback/suno"
+            ],
+            "list": "GET /audios",
+            "detail": "GET /audio/{audio_id}"
+        }
+    }
 
 
 # =========================
-# Callback Endpoint
+# CALLBACK HANDLER (UMUM)
 # =========================
-@app.post("/callback")
-async def callback(request: Request):
+async def handle_callback(request: Request):
     try:
         payload = await request.json()
+    except:
+        return {"ok": True}
 
-        # Render-friendly: cepat, tidak validasi berat
-        if payload.get("code") != 200:
-            return JSONResponse(status_code=200, content={"ok": True})
+    data = payload.get("data") or {}
+    items = data.get("data") or []
 
-        data = payload.get("data", {})
-        if data.get("callbackType") != "complete":
-            return JSONResponse(status_code=200, content={"ok": True})
+    if not items:
+        return {"ok": True}
 
-        task_id = data.get("task_id")
-        results = data.get("data", [])
+    c = db()
+    for i in items:
+        c.execute("""
+        INSERT INTO audios (
+            audio_id, title, tags, duration,
+            audio_url, stream_audio_url, image_url, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(audio_id) DO UPDATE SET
+            title=excluded.title,
+            tags=excluded.tags,
+            duration=excluded.duration,
+            audio_url=excluded.audio_url,
+            stream_audio_url=excluded.stream_audio_url,
+            image_url=excluded.image_url,
+            created_at=excluded.created_at
+        """, (
+            i.get("id"),
+            i.get("title"),
+            i.get("tags"),
+            i.get("duration"),
+            i.get("audio_url"),
+            i.get("stream_audio_url"),
+            i.get("image_url"),
+            datetime.utcnow().isoformat()
+        ))
+    c.commit()
+    c.close()
+    return {"success": True}
 
-        conn = sqlite3.connect(DB_PATH)
-        cur = conn.cursor()
 
-        for item in results:
-            cur.execute("""
-                INSERT OR REPLACE INTO audio_results (
-                    task_id,
-                    audio_id,
-                    title,
-                    tags,
-                    duration,
-                    audio_url,
-                    stream_audio_url,
-                    image_url,
-                    model_name,
-                    prompt,
-                    create_time,
-                    created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                task_id,
-                item.get("id"),
-                item.get("title"),
-                item.get("tags"),
-                item.get("duration"),
-                item.get("audio_url"),
-                item.get("stream_audio_url"),
-                item.get("image_url"),
-                item.get("model_name"),
-                item.get("prompt"),
-                item.get("createTime"),
-                datetime.utcnow().isoformat()
-            ))
+# ✅ CALLBACK STANDARD
+@app.post("/callback")
+async def callback(request: Request):
+    return await handle_callback(request)
 
-        conn.commit()
-        conn.close()
 
-        return JSONResponse(status_code=200, content={"success": True})
-
-    except Exception as e:
-        print("Callback error:", e)
-        return JSONResponse(status_code=200, content={"success": False})
+# ✅ CALLBACK SUNO (INI YANG KURANG)
+@app.post("/callback/suno")
+async def callback_suno(request: Request):
+    return await handle_callback(request)
 
 
 # =========================
-# API Android (List Audio)
+# API ANDROID
 # =========================
 @app.get("/audios")
 def audios():
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT audio_id, title, tags, duration, audio_url, stream_audio_url, image_url
-        FROM audio_results
-        ORDER BY id DESC
-    """)
-    rows = cur.fetchall()
-    conn.close()
+    c = db()
+    rows = c.execute("SELECT * FROM audios ORDER BY id DESC").fetchall()
+    c.close()
+    return {"count": len(rows), "data": [dict(r) for r in rows]}
 
-    return {
-        "count": len(rows),
-        "data": [
-            {
-                "audio_id": r[0],
-                "title": r[1],
-                "tags": r[2],
-                "duration": r[3],
-                "audio_url": r[4],
-                "stream_audio_url": r[5],
-                "image_url": r[6]
-            } for r in rows
-        ]
-    }
+
+@app.get("/audio/{audio_id}")
+def audio_detail(audio_id: str):
+    c = db()
+    r = c.execute("SELECT * FROM audios WHERE audio_id=?", (audio_id,)).fetchone()
+    c.close()
+    if not r:
+        raise HTTPException(404, "Not found")
+    return dict(r)
 
 
