@@ -1,207 +1,142 @@
 import os
-import logging
-import requests
+import sqlite3
+from datetime import datetime
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-# =====================================================
-# CONFIG
-# =====================================================
-SUNO_API_TOKEN = os.getenv("SUNO_API_TOKEN", "ISI_TOKEN_KAMU")
-CALLBACK_URL = os.getenv(
-    "CALLBACK_URL",
-    "https://musik-android.onrender.com/callback/suno"
-)
-SUNO_GENERATE_URL = "https://api.sunoapi.org/api/v1/generate"
+app = FastAPI(title="Musik Android API")
 
-APP_NAME = os.getenv("APP_NAME", "Suno Music Service")
-ENV = os.getenv("ENV", "production")
+# =========================
+# Render Disk Path (PENTING)
+# =========================
+DB_PATH = "/data/musik.db"  # Render persistent disk
 
-# =====================================================
-# IN-MEMORY STORE (STATUS TASK)
-# NOTE: akan hilang jika Render restart
-# =====================================================
-TASK_STORE = {}
-# {
-#   task_id: {
-#       "status": "pending|complete|error",
-#       "result": [...]
-#   }
-# }
 
-# =====================================================
-# LOGGING
-# =====================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
-)
+def init_db():
+    os.makedirs("/data", exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS audio_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT,
+            audio_id TEXT UNIQUE,
+            title TEXT,
+            tags TEXT,
+            duration REAL,
+            audio_url TEXT,
+            stream_audio_url TEXT,
+            image_url TEXT,
+            model_name TEXT,
+            prompt TEXT,
+            create_time TEXT,
+            created_at TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
 
-# =====================================================
-# FASTAPI APP
-# =====================================================
-app = FastAPI(
-    title=APP_NAME,
-    version="1.0.0"
-)
 
-# =====================================================
-# ROOT / HEALTH CHECK
-# =====================================================
+init_db()
+
+
+# =========================
+# Health Check (WAJIB)
+# =========================
 @app.get("/")
-def root():
-    return {
-        "status": "ok",
-        "service": APP_NAME,
-        "env": ENV,
-        "endpoints": {
-            "generate": "POST /generate",
-            "status": "GET /status/{task_id}",
-            "callback": "POST /callback/suno"
-        }
-    }
+def health():
+    return {"status": "ok", "platform": "render"}
 
-# =====================================================
-# GENERATE MUSIC (CLIENT HIT INI)
-# =====================================================
-@app.post("/generate")
-async def generate_music(request: Request):
-    # ---- aman walau body kosong / invalid
-    try:
-        body = await request.json()
-    except:
-        return JSONResponse(
-            {
-                "error": "invalid_json",
-                "message": "Request body must be valid JSON"
-            },
-            status_code=400
-        )
 
-    # ---- validasi wajib
-    prompt = body.get("prompt")
-    if not prompt:
-        return JSONResponse(
-            {
-                "error": "missing_prompt",
-                "message": "Field 'prompt' is required"
-            },
-            status_code=400
-        )
-
-    # ---- payload ke Suno
-    payload = {
-        "customMode": True,
-        "instrumental": body.get("instrumental", True),
-        "model": body.get("model", "V4_5ALL"),
-        "callBackUrl": CALLBACK_URL,
-        "prompt": prompt,
-        "style": body.get("style", "Classical"),
-        "title": body.get("title", "Generated Music"),
-        "personaId": body.get("personaId"),
-        "negativeTags": body.get("negativeTags"),
-        "vocalGender": body.get("vocalGender", "m"),
-        "styleWeight": body.get("styleWeight", 0.65),
-        "weirdnessConstraint": body.get("weirdnessConstraint", 0.65),
-        "audioWeight": body.get("audioWeight", 0.65)
-    }
-
-    headers = {
-        "Authorization": f"Bearer {SUNO_API_TOKEN}",
-        "Content-Type": "application/json"
-    }
-
-    try:
-        response = requests.post(
-            SUNO_GENERATE_URL,
-            json=payload,
-            headers=headers,
-            timeout=30
-        )
-
-        data = response.json()
-
-        # ---- simpan task_id untuk cek status
-        task_id = data.get("data", {}).get("taskId")
-        if task_id:
-            TASK_STORE[task_id] = {
-                "status": "pending",
-                "result": None
-            }
-
-        return JSONResponse(
-            content=data,
-            status_code=response.status_code
-        )
-
-    except Exception as e:
-        logging.exception("Generate request failed")
-        return JSONResponse(
-            {
-                "error": "suno_request_failed",
-                "message": str(e)
-            },
-            status_code=500
-        )
-
-# =====================================================
-# CALLBACK DARI SUNO (JANGAN DIPANGGIL MANUAL)
-# =====================================================
-@app.post("/callback/suno")
-async def suno_callback(request: Request):
+# =========================
+# Callback Endpoint
+# =========================
+@app.post("/callback")
+async def callback(request: Request):
     try:
         payload = await request.json()
 
-        code = payload.get("code")
-        data = payload.get("data") or {}
+        # Render-friendly: cepat, tidak validasi berat
+        if payload.get("code") != 200:
+            return JSONResponse(status_code=200, content={"ok": True})
+
+        data = payload.get("data", {})
+        if data.get("callbackType") != "complete":
+            return JSONResponse(status_code=200, content={"ok": True})
 
         task_id = data.get("task_id")
-        callback_type = data.get("callbackType")
-        music_list = data.get("data")
+        results = data.get("data", [])
 
-        logging.info("SUNO CALLBACK RECEIVED")
-        logging.info({
-            "task_id": task_id,
-            "callbackType": callback_type,
-            "code": code
-        })
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
 
-        if not task_id:
-            return JSONResponse({"status": "ignored"}, status_code=200)
+        for item in results:
+            cur.execute("""
+                INSERT OR REPLACE INTO audio_results (
+                    task_id,
+                    audio_id,
+                    title,
+                    tags,
+                    duration,
+                    audio_url,
+                    stream_audio_url,
+                    image_url,
+                    model_name,
+                    prompt,
+                    create_time,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                task_id,
+                item.get("id"),
+                item.get("title"),
+                item.get("tags"),
+                item.get("duration"),
+                item.get("audio_url"),
+                item.get("stream_audio_url"),
+                item.get("image_url"),
+                item.get("model_name"),
+                item.get("prompt"),
+                item.get("createTime"),
+                datetime.utcnow().isoformat()
+            ))
 
-        if code == 200 and callback_type == "complete":
-            TASK_STORE[task_id] = {
-                "status": "complete",
-                "result": music_list
-            }
-        else:
-            TASK_STORE[task_id] = {
-                "status": "error",
-                "result": None
-            }
+        conn.commit()
+        conn.close()
 
-        return JSONResponse({"status": "received"}, status_code=200)
+        return JSONResponse(status_code=200, content={"success": True})
 
-    except Exception:
-        logging.exception("Callback error")
-        return JSONResponse({"status": "error_handled"}, status_code=200)
+    except Exception as e:
+        print("Callback error:", e)
+        return JSONResponse(status_code=200, content={"success": False})
 
-# =====================================================
-# CEK STATUS (CLIENT POLLING)
-# =====================================================
-@app.get("/status/{task_id}")
-def check_status(task_id: str):
-    task = TASK_STORE.get(task_id)
 
-    if not task:
-        return JSONResponse(
-            {"status": "not_found"},
-            status_code=404
-        )
+# =========================
+# API Android (List Audio)
+# =========================
+@app.get("/audios")
+def audios():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT audio_id, title, tags, duration, audio_url, stream_audio_url, image_url
+        FROM audio_results
+        ORDER BY id DESC
+    """)
+    rows = cur.fetchall()
+    conn.close()
 
     return {
-        "task_id": task_id,
-        "status": task["status"],
-        "result": task["result"]
+        "count": len(rows),
+        "data": [
+            {
+                "audio_id": r[0],
+                "title": r[1],
+                "tags": r[2],
+                "duration": r[3],
+                "audio_url": r[4],
+                "stream_audio_url": r[5],
+                "image_url": r[6]
+            } for r in rows
+        ]
     }
-
