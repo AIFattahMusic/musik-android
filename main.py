@@ -1,19 +1,19 @@
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
-from sqlalchemy import Column, Integer, String, create_engine
+from sqlalchemy import create_engine, Column, Integer, String
 from sqlalchemy.orm import declarative_base, sessionmaker
 import os
 import threading
 import requests
 
-# =========================
+# ======================
 # APP
-# =========================
+# ======================
 app = FastAPI()
 
-# =========================
+# ======================
 # CONFIG
-# =========================
+# ======================
 SAVE_DIR = "generated_music"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
@@ -21,9 +21,9 @@ SUNO_API_KEY = os.environ.get("SUNO_API_KEY")
 SUNO_URL = "https://api.sunoapi.org/api/v1/generate"
 CALLBACK_URL = "https://musik-android.onrender.com/generate-music-callback"
 
-# =========================
+# ======================
 # DATABASE (SQLite)
-# =========================
+# ======================
 DATABASE_URL = "sqlite:///./music.db"
 
 engine = create_engine(
@@ -39,25 +39,29 @@ class Song(Base):
 
     id = Column(Integer, primary_key=True)
     task_id = Column(String, unique=True, index=True)
-    prompt = Column(String)
     status = Column(String)
     filename = Column(String)
 
 
 Base.metadata.create_all(bind=engine)
 
-# =========================
-# GENERATE 1 SONG
-# =========================
+# ======================
+# ROOT (CEK HIDUP)
+# ======================
+@app.get("/")
+def root():
+    return {"status": "ok"}
+
+# ======================
+# 1️⃣ GENERATE 1 LAGU
+# ======================
 @app.post("/generate")
 def generate_song():
     if not SUNO_API_KEY:
         raise HTTPException(500, "SUNO_API_KEY belum diset")
 
-    prompt = "chill lo-fi instrumental, relaxing vibe"
-
     payload = {
-        "prompt": prompt,
+        "prompt": "chill lo-fi instrumental, relaxing vibe",
         "make_instrumental": True,
         "callback_url": CALLBACK_URL
     }
@@ -68,29 +72,23 @@ def generate_song():
     }
 
     r = requests.post(SUNO_URL, json=payload, headers=headers, timeout=30)
-    result = r.json()
+    data = r.json()
 
-    task_id = result.get("data", {}).get("task_id")
+    task_id = data.get("data", {}).get("task_id")
     if not task_id:
         raise HTTPException(500, "Generate gagal")
 
     db = SessionLocal()
-    song = Song(
-        task_id=task_id,
-        prompt=prompt,
-        status="pending",
-        filename=""
-    )
-    db.add(song)
+    db.add(Song(task_id=task_id, status="pending", filename=""))
     db.commit()
     db.close()
 
     return {"task_id": task_id, "status": "pending"}
 
-# =========================
-# CALLBACK SUNO
-# =========================
-def download_music(task_id: str, musics: list):
+# ======================
+# 2️⃣ CALLBACK SUNO
+# ======================
+def download_music(task_id, musics):
     db = SessionLocal()
     song = db.query(Song).filter(Song.task_id == task_id).first()
 
@@ -103,20 +101,16 @@ def download_music(task_id: str, musics: list):
         if not audio_url:
             continue
 
-        try:
-            r = requests.get(audio_url, timeout=30)
-            if r.status_code == 200:
-                filename = f"{task_id}.mp3"
-                filepath = os.path.join(SAVE_DIR, filename)
+        r = requests.get(audio_url, timeout=30)
+        if r.status_code == 200:
+            filename = f"{task_id}.mp3"
+            path = os.path.join(SAVE_DIR, filename)
 
-                with open(filepath, "wb") as f:
-                    f.write(r.content)
+            with open(path, "wb") as f:
+                f.write(r.content)
 
-                song.status = "completed"
-                song.filename = filename
-                db.commit()
-        except Exception as e:
-            song.status = "failed"
+            song.status = "completed"
+            song.filename = filename
             db.commit()
 
     db.close()
@@ -126,27 +120,20 @@ def download_music(task_id: str, musics: list):
 async def generate_music_callback(request: Request):
     payload = await request.json()
 
-    code = payload.get("code")
-    data = payload.get("data", {})
-    callback_type = data.get("callbackType")
-    task_id = data.get("task_id")
-    musics = data.get("data", [])
+    if payload.get("code") == 200:
+        data = payload.get("data", {})
+        if data.get("callbackType") == "complete":
+            threading.Thread(
+                target=download_music,
+                args=(data.get("task_id"), data.get("data", [])),
+                daemon=True
+            ).start()
 
-    # WAJIB BALAS CEPAT
-    response = JSONResponse({"status": "received"}, status_code=200)
+    return JSONResponse({"status": "received"}, status_code=200)
 
-    if code == 200 and callback_type == "complete":
-        threading.Thread(
-            target=download_music,
-            args=(task_id, musics),
-            daemon=True
-        ).start()
-
-    return response
-
-# =========================
-# LIST SONGS
-# =========================
+# ======================
+# 3️⃣ LIST LAGU (DATABASE)
+# ======================
 @app.get("/songs")
 def list_songs():
     db = SessionLocal()
@@ -156,16 +143,15 @@ def list_songs():
     return [
         {
             "task_id": s.task_id,
-            "prompt": s.prompt,
             "status": s.status,
             "filename": s.filename
         }
         for s in songs
     ]
 
-# =========================
-# PLAY & DOWNLOAD
-# =========================
+# ======================
+# 4️⃣ PUTAR LAGU
+# ======================
 @app.get("/play/{task_id}")
 def play_song(task_id: str):
     db = SessionLocal()
@@ -180,7 +166,9 @@ def play_song(task_id: str):
         media_type="audio/mpeg"
     )
 
-
+# ======================
+# 5️⃣ DOWNLOAD LAGU
+# ======================
 @app.get("/download/{task_id}")
 def download_song(task_id: str):
     db = SessionLocal()
@@ -195,8 +183,3 @@ def download_song(task_id: str):
         media_type="audio/mpeg",
         filename=song.filename
     )
-
-
-@app.get("/")
-def root():
-    return {"status": "ok"}
