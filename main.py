@@ -91,20 +91,30 @@ def generate_music(body: GenerateRequest):
         )
 
     data = response.json()
-    task_id = data.get("taskId")
 
-    music_tasks[task_id] = {
-        "status": "PENDING",
-        "audioUrl": None,
-        "coverUrl": None,
-        "duration": None
-    }
+task_id = (
+    data.get("taskId")
+    or data.get("data", {}).get("taskId")
+)
 
-    return {
-        "success": True,
-        "taskId": task_id,
-        "status": "PENDING"
-    }
+if not task_id:
+    raise HTTPException(
+        status_code=500,
+        detail=f"Suno tidak mengembalikan taskId: {data}"
+    )
+
+music_tasks[task_id] = {
+    "status": "PENDING",
+    "audioUrl": None,
+    "coverUrl": None,
+    "duration": None
+}
+
+return {
+    "success": True,
+    "taskId": task_id,
+    "status": "PENDING"
+}
 
 # ======================
 # EXTEND MUSIC
@@ -228,6 +238,7 @@ def download(task_id: str):
         raise HTTPException(404, "Belum siap")
 
     return FileResponse(path, filename=task_id + ".mp3")
+
 
 
 
