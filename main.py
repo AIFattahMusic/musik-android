@@ -137,17 +137,6 @@ async def music_callback(request: Request):
     if task_id:
         music_tasks[task_id] = payload
 
-    return JSONResponse({"status": "ok"})
-        "model": "V4_5ALL",
-        "callBackUrl": CALLBACK_URL,
-        "prompt": body.prompt or "Extend the music smoothly",
-        "title": body.title or "Extended Music",
-        "continueAt": body.continueAt,
-        "styleWeight": 0.65,
-        "audioWeight": 0.65,
-        "weirdnessConstraint": 0.65
-    
-
     response = requests.post(
         API_URL_EXTEND,
         json=payload,
@@ -216,6 +205,7 @@ def download(task_id: str):
         raise HTTPException(404, "Belum siap")
 
     return FileResponse(path, filename=task_id + ".mp3")
+
 
 
 
