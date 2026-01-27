@@ -61,10 +61,10 @@ def health():
         "token_loaded": bool(SUNO_API_TOKEN)
     }
 
-# ======================
-# GENERATE MUSIC (BARU)
-# ======================
-@app.post("/suno/generate")
+# =========================
+# GENERATE MUSIC (MODEL 4.5)
+# =========================
+@app.post("/music/generate")
 def generate_music(body: GenerateRequest):
     headers = get_headers()
 
@@ -74,11 +74,11 @@ def generate_music(body: GenerateRequest):
         "title": body.title,
         "vocalGender": body.vocalGender,
         "model": "V4_5ALL",
-        "callBackUrl": CALLBACK_URL
+        "callBackUrl": CALLBACK_URL,
     }
 
     response = requests.post(
-        SUNO_API_URL_GENERATE,
+        API_URL_GENERATE,
         json=payload,
         headers=headers,
         timeout=30
@@ -92,24 +92,25 @@ def generate_music(body: GenerateRequest):
 
     data = response.json()
 
-task_id = (
-    data.get("taskId")
-    or data.get("data", {}).get("taskId")
-)
-
-if not task_id:
-    raise HTTPException(
-        status_code=500,
-        detail=f"Suno tidak mengembalikan taskId: {data}"
+    task_id = (
+        data.get("taskId")
+        or data.get("data", {}).get("taskId")
     )
 
-music_tasks[task_id] = {
+    if not task_id:
+        raise HTTPException(
+            status_code=500,
+            detail=f"API tidak mengembalikan taskId: {data}"
+        )
+
+    music_tasks[task_id] = {
         "status": "PENDING",
         "audioUrl": None,
         "coverUrl": None,
         "duration": None
-    } 
-         return {
+    }
+
+    return {
         "success": True,
         "taskId": task_id,
         "status": "PENDING"
@@ -237,6 +238,7 @@ def download(task_id: str):
         raise HTTPException(404, "Belum siap")
 
     return FileResponse(path, filename=task_id + ".mp3")
+
 
 
 
