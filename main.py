@@ -9,8 +9,8 @@ app = FastAPI()
 # ======================
 # CONFIG
 # ======================
-SUNO_API_URL_GENERATE = "https://api.sunoapi.org/api/v1/generate"
-SUNO_API_URL_EXTEND = "https://api.sunoapi.org/api/v1/generate/extend"
+SUNO_GENERATE_URL = "https://api.sunoapi.org/api/v1/generate"
+SUNO_EXTEND_URL = "https://api.sunoapi.org/api/v1/generate/extend"
 CALLBACK_URL = "https://musik-android.onrender.com/suno/callback"
 
 SUNO_API_TOKEN = (
@@ -30,27 +30,13 @@ def get_headers():
     }
 
 # ======================
-# SIMPLE RATE LIMITER
-# ======================
-last_generate_time = 0
-
-def rate_limit(seconds=60):
-    global last_generate_time
-    now = time.time()
-    if now - last_generate_time < seconds:
-        raise HTTPException(
-            status_code=429,
-            detail="Tunggu 1 menit sebelum generate lagi"
-        )
-    last_generate_time = now
-
-# ======================
 # MEMORY STORE
 # ======================
+# NOTE: Render restart = data hilang
 music_tasks = {}
 
 # ======================
-# SCHEMAS
+# SCHEMA
 # ======================
 class GenerateRequest(BaseModel):
     prompt: str
@@ -61,8 +47,6 @@ class GenerateRequest(BaseModel):
 class ExtendRequest(BaseModel):
     audioId: str
     continueAt: int = 60
-    prompt: str | None = None
-    title: str | None = None
 
 # ======================
 # HEALTH
@@ -71,15 +55,15 @@ class ExtendRequest(BaseModel):
 def health():
     return {
         "status": "ok",
-        "token_loaded": bool(SUNO_API_TOKEN)
+        "token_loaded": bool(SUNO_API_TOKEN),
+        "songs_saved": len(music_tasks)
     }
 
 # ======================
-# GENERATE MUSIC (AMAN)
+# GENERATE MUSIC
 # ======================
 @app.post("/suno/generate")
 def generate_music(body: GenerateRequest):
-    rate_limit(60)
     headers = get_headers()
 
     payload = {
@@ -92,130 +76,118 @@ def generate_music(body: GenerateRequest):
     }
 
     response = requests.post(
-        SUNO_API_URL_GENERATE,
+        SUNO_GENERATE_URL,
         json=payload,
         headers=headers,
         timeout=30
     )
 
-    data = response.json()
-
-    # 🔥 AMBIL taskId DARI SEMUA KEMUNGKINAN
-    task_id = (
-        data.get("taskId")
-        or data.get("data", {}).get("taskId")
-        or data.get("data", {}).get("task", {}).get("taskId")
-    )
-
-    # ❌ JANGAN BOROS TOKEN
-    if not task_id:
-        print("SUNO RAW RESPONSE:", data)
+    if response.status_code != 200:
         raise HTTPException(
-            status_code=500,
-            detail="taskId tidak ditemukan. Generate dihentikan."
+            status_code=response.status_code,
+            detail=response.text
         )
 
-    music_tasks[task_id] = {
-        "status": "PENDING",
-        "audioUrl": None,
-        "coverUrl": None,
-        "duration": None
-    }
-
+    # ⚠️ JANGAN CARI taskId DI SINI
     return {
         "success": True,
-        "taskId": task_id,
-        "status": "PENDING"
+        "status": "PENDING",
+        "message": "Generate dikirim. Menunggu callback Suno."
     }
 
 # ======================
-# EXTEND MUSIC (AMAN)
+# EXTEND MUSIC
 # ======================
 @app.post("/suno/extend")
 def extend_music(body: ExtendRequest):
-    rate_limit(60)
     headers = get_headers()
 
     payload = {
         "defaultParamFlag": True,
         "audioId": body.audioId,
         "model": "V4_5ALL",
-        "callBackUrl": CALLBACK_URL,
-        "prompt": body.prompt or "Extend smoothly",
-        "title": body.title or "Extended Music",
-        "continueAt": body.continueAt
+        "continueAt": body.continueAt,
+        "callBackUrl": CALLBACK_URL
     }
 
     response = requests.post(
-        SUNO_API_URL_EXTEND,
+        SUNO_EXTEND_URL,
         json=payload,
         headers=headers,
         timeout=30
     )
 
-    data = response.json()
-
-    task_id = (
-        data.get("taskId")
-        or data.get("data", {}).get("taskId")
-        or data.get("data", {}).get("task", {}).get("taskId")
-    )
-
-    if not task_id:
-        print("SUNO RAW RESPONSE:", data)
+    if response.status_code != 200:
         raise HTTPException(
-            status_code=500,
-            detail="taskId tidak ditemukan. Extend dihentikan."
+            status_code=response.status_code,
+            detail=response.text
         )
-
-    music_tasks[task_id] = {
-        "status": "PENDING",
-        "audioUrl": None,
-        "coverUrl": None,
-        "duration": None
-    }
 
     return {
         "success": True,
-        "taskId": task_id,
-        "status": "PENDING"
+        "status": "PENDING",
+        "message": "Extend dikirim. Menunggu callback Suno."
     }
 
 # ======================
-# CHECK STATUS (GRATIS)
+# CALLBACK (INI INTINYA)
 # ======================
-@app.get("/suno/status/{task_id}")
-def check_status(task_id: str):
+@app.post("/suno/callback")
+async def suno_callback(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return {"status": "ignored"}
+
+    print("SUNO CALLBACK RAW:", payload)
+
+    data = payload.get("data", {})
+    task_id = data.get("task_id")
+
+    if not task_id:
+        return {"status": "no_task_id"}
+
+    songs = data.get("data", [])
+    if not songs:
+        return {"status": "no_songs"}
+
+    # simpan SEMUA lagu
+    music_tasks[task_id] = {
+        "status": "SUCCESS",
+        "songs": []
+    }
+
+    for song in songs:
+        music_tasks[task_id]["songs"].append({
+            "audio_id": song.get("id"),
+            "audio_url": song.get("audio_url"),
+            "stream_url": song.get("stream_audio_url"),
+            "image_url": song.get("image_url"),
+            "title": song.get("title"),
+            "prompt": song.get("prompt"),
+            "duration": song.get("duration"),
+            "model": song.get("model_name"),
+            "created_at": song.get("createTime")
+        })
+
+    return {"status": "ok"}
+
+# ======================
+# GET ALL SONGS
+# ======================
+@app.get("/suno/all")
+def get_all_songs():
+    return music_tasks
+
+# ======================
+# GET SONG BY TASK
+# ======================
+@app.get("/suno/task/{task_id}")
+def get_task(task_id: str):
     task = music_tasks.get(task_id)
     if not task:
         raise HTTPException(
             status_code=404,
-            detail="Task ID tidak ditemukan"
+            detail="Task tidak ditemukan"
         )
-    return {
-        "taskId": task_id,
-        **task
-    }
-
-# ======================
-# CALLBACK (PENTING)
-# ======================
-@app.post("/suno/callback")
-async def suno_callback(request: Request):
-    payload = await request.json()
-
-    print("SUNO CALLBACK:", payload)
-
-    task_id = payload.get("taskId")
-    if not task_id:
-        return {"status": "ignored"}
-
-    music_tasks.setdefault(task_id, {})
-    music_tasks[task_id].update({
-        "status": payload.get("status"),
-        "audioUrl": payload.get("audioUrl"),
-        "coverUrl": payload.get("coverUrl"),
-        "duration": payload.get("duration")
-    })
-
-    return {"status": "ok"}
+    return task
