@@ -1,6 +1,6 @@
 import os
-import math
-import wave
+ math
+import waveimport
 import struct
 import uuid
 from fastapi import FastAPI, HTTPException
@@ -71,3 +71,4 @@ def download(audio_id: str):
         media_type="audio/wav",
         filename=f"{audio_id}.wav"
     )
+
