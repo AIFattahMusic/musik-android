@@ -3,23 +3,29 @@ from pydantic import BaseModel
 import requests
 import os
 
-app = FastAPI(title="Suno Extend API")
+app = FastAPI()
 
 # ======================
 # CONFIG
 # ======================
 SUNO_API_URL = "https://api.sunoapi.org/api/v1/generate/extend"
-SUNO_API_TOKEN = os.getenv("SUNO_API_TOKEN")
-
-if not SUNO_API_TOKEN:
-    raise RuntimeError("SUNO_API_TOKEN belum diset di environment")
-
 CALLBACK_URL = "https://musik-android.onrender.com/suno/callback"
 
-HEADERS = {
-    "Authorization": f"Bearer {SUNO_API_TOKEN}",
-    "Content-Type": "application/json"
-}
+SUNO_API_TOKEN = os.getenv("SUNO_API_TOKEN")
+
+
+def get_headers():
+    if not SUNO_API_TOKEN:
+        raise HTTPException(
+            status_code=500,
+            detail="SUNO_API_TOKEN belum diset di Render Environment"
+        )
+
+    return {
+        "Authorization": f"Bearer {SUNO_API_TOKEN}",
+        "Content-Type": "application/json"
+    }
+
 
 # ======================
 # SCHEMA
@@ -38,7 +44,7 @@ class ExtendRequest(BaseModel):
 def health():
     return {
         "status": "ok",
-        "service": "Suno Extend API"
+        "token_loaded": bool(SUNO_API_TOKEN)
     }
 
 
@@ -47,6 +53,8 @@ def health():
 # ======================
 @app.post("/suno/extend")
 def extend_music(body: ExtendRequest):
+    headers = get_headers()
+
     payload = {
         "defaultParamFlag": True,
         "audioId": body.audioId,
@@ -63,24 +71,24 @@ def extend_music(body: ExtendRequest):
     }
 
     try:
-        res = requests.post(
+        response = requests.post(
             SUNO_API_URL,
             json=payload,
-            headers=HEADERS,
+            headers=headers,
             timeout=30
         )
     except requests.RequestException as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    if res.status_code != 200:
+    if response.status_code != 200:
         raise HTTPException(
-            status_code=res.status_code,
-            detail=res.text
+            status_code=response.status_code,
+            detail=response.text
         )
 
     return {
         "success": True,
-        "result": res.json()
+        "data": response.json()
     }
 
 
@@ -95,27 +103,18 @@ async def suno_callback(request: Request):
     print(payload)
 
     """
-    Biasanya:
-    {
-      taskId,
-      status: SUCCESS | FAILED,
-      audioUrl,
-      coverUrl,
-      duration
-    }
+    Contoh isi:
+    - taskId
+    - status: SUCCESS / FAILED
+    - audioUrl
+    - coverUrl
+    - duration
     """
 
-    # TODO (opsional):
-    # - simpan ke database
-    # - update status user
-    # - download audio
+    # TODO:
+    # simpan ke database / kirim ke client / download audio
 
     return {"status": "ok"}
-
-
-@app.get("/db-all")
-def all():
-    return data_store
 
 import os, psycopg2
 
@@ -134,4 +133,5 @@ def db_all():
     cur.close()
     conn.close()
     return rows
+
 
