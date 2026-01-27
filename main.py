@@ -1,6 +1,6 @@
 import os
 import requests
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -8,7 +8,7 @@ from pydantic import BaseModel
 # =========================
 # APP
 # =========================
-app = FastAPI(title="Suno Stable Proxy API")
+app = FastAPI(title="Suno Working API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -21,6 +21,11 @@ app.add_middleware(
 # =========================
 # CONFIG
 # =========================
+BASE_URL = os.getenv(
+    "BASE_URL",
+    "https://musik-android.onrender.com"
+).rstrip("/")
+
 SUNO_TOKEN = os.getenv("SUNO_TOKEN")
 if not SUNO_TOKEN:
     raise RuntimeError("SUNO_TOKEN belum diset")
@@ -50,63 +55,64 @@ def health():
     return {"status": "ok"}
 
 # =========================
-# GENERATE MUSIC (NO LOGIC)
+# CALLBACK (WAJIB ADA)
+# =========================
+@app.post("/callback")
+async def callback(req: Request):
+    # Suno hanya butuh endpoint ini ADA
+    return {"status": "received"}
+
+# =========================
+# GENERATE MUSIC (FIXED)
 # =========================
 @app.post("/generate")
 def generate_music(data: GenerateRequest):
-    """
-    HANYA:
-    - kirim request ke Suno
-    - balikin response apa adanya
-    """
+    payload = {
+        "prompt": data.prompt,
+        "tags": data.tags,
+        "custom_mode": data.custom_mode,
+        "instrumental": data.instrumental,
+        "model": data.model,
+        # ⛔ INI WAJIB
+        "callBackUrl": f"{BASE_URL}/callback",
+    }
+
     try:
         r = requests.post(
             SUNO_GENERATE_URL,
             headers=HEADERS,
-            json={
-                "prompt": data.prompt,
-                "tags": data.tags,
-                "custom_mode": data.custom_mode,
-                "instrumental": data.instrumental,
-                "model": data.model,
-            },
+            json=payload,
             timeout=60,
         )
     except requests.RequestException:
         raise HTTPException(502, "Tidak bisa konek ke Suno")
 
-    if r.status_code != 200:
-        raise HTTPException(502, "Generate gagal")
+    # Suno suka balas 200 tapi code 400 di body
+    res = r.json()
+    if res.get("code") != 200:
+        raise HTTPException(400, res.get("msg", "Generate gagal"))
 
-    # ⚠️ JANGAN DIPARSE, JANGAN DIUTAK-ATIK
-    return r.json()
+    return res
 
 # =========================
-# STREAM / DOWNLOAD AUDIO
+# STREAM / PLAY AUDIO
 # =========================
 @app.get("/play")
-def play_audio(
-    audio_url: str = Query(..., description="audioUrl dari Suno")
-):
-    """
-    Proxy audio dari Suno.
-    - Bisa diputar
-    - Bisa di-download
-    - Aman
-    """
+def play_audio(audio_url: str = Query(...)):
     try:
         r = requests.get(audio_url, stream=True, timeout=30)
     except requests.RequestException:
         raise HTTPException(502, "Gagal ambil audio")
 
     if r.status_code != 200:
-        # BELUM SIAP = BUKAN ERROR FATAL
-        raise HTTPException(202, "Audio belum siap, coba lagi")
+        raise HTTPException(202, "Audio belum siap")
 
     return StreamingResponse(
         r.iter_content(chunk_size=8192),
         media_type="audio/mpeg",
         headers={
             "Content-Disposition": "inline; filename=music.mp3"
-        }
+        },
     )
+
+
