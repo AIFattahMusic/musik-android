@@ -165,17 +165,6 @@ def generate_status(task_id: str):
 # =====================================================
 # DOWNLOAD MP3
 # =====================================================
-from fastapi import FastAPI, HTTPException
-import os
-import base64
-
-app = FastAPI()
-
-GENERATED_DIR = "generated"
-lyrics_store = {
-    # contoh
-    # "task123": "Ini lirik lagunya..."
-}
 
 @app.get("/generate/result/{task_id}")
 def get_result(task_id: str):
@@ -231,6 +220,7 @@ def db_all():
     cur.close()
     conn.close()
     return rows
+
 
 
 
