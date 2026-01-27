@@ -1,74 +1,71 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-import httpx
 import os
-import logging
+import threading
+import requests
 
 app = FastAPI()
 
-# logging setup
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-SAVE_DIR = "generated_music"
+# Folder simpan musik (Render writeable, tapi non-persistent)
+SAVE_DIR = os.environ.get("SAVE_DIR", "generated_music")
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 
+def download_music(task_id: str, musics: list):
+    """
+    Download dijalankan di background thread
+    supaya callback Suno tidak timeout
+    """
+    for i, music in enumerate(musics, start=1):
+        audio_url = music.get("audio_url")
+        if not audio_url:
+            continue
+
+        try:
+            r = requests.get(audio_url, timeout=20)
+            if r.status_code == 200:
+                filename = f"{task_id}_{i}.mp3"
+                filepath = os.path.join(SAVE_DIR, filename)
+                with open(filepath, "wb") as f:
+                    f.write(r.content)
+                print("Saved:", filepath)
+        except Exception as e:
+            print("Download error:", e)
+
+
+@app.get("/")
+def root():
+    return {"status": "ok"}
+
+
+# 🚨 INI CALLBACK YANG HARUS KAMU SET DI SUNO
 @app.post("/generate-music-callback")
 async def generate_music_callback(request: Request):
-    try:
-        payload = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
+    payload = await request.json()
 
     code = payload.get("code")
     msg = payload.get("msg", "")
-    data = payload.get("data")
+    data = payload.get("data", {})
 
-    if not isinstance(data, dict):
-        raise HTTPException(status_code=400, detail="Invalid data format")
-
-    task_id = data.get("task_id")
     callback_type = data.get("callbackType")
-    musics = data.get("data")
+    task_id = data.get("task_id")
+    musics = data.get("data", [])
 
-    if not task_id or not isinstance(musics, list):
-        raise HTTPException(status_code=400, detail="Missing task_id or music list")
+    print("=== SUNO CALLBACK MASUK ===")
+    print("Task ID:", task_id)
+    print("Callback Type:", callback_type)
+    print("Code:", code)
+    print("Message:", msg)
 
-    logger.info("=== CALLBACK MASUK ===")
-    logger.info(f"Task ID: {task_id}")
-    logger.info(f"Type: {callback_type}")
-    logger.info(f"Code: {code}")
-    logger.info(f"Message: {msg}")
+    # 🚨 WAJIB: balas 200 CEPAT
+    response = JSONResponse({"status": "received"}, status_code=200)
 
-    if code != 200:
-        logger.error(f"Generate gagal: {msg}")
-        return JSONResponse({"status": "failed", "message": msg})
+    # Download HANYA saat complete & sukses
+    if code == 200 and callback_type == "complete":
+        threading.Thread(
+            target=download_music,
+            args=(task_id, musics),
+            daemon=True
+        ).start()
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        for i, music in enumerate(musics, start=1):
-            title = music.get("title", f"music_{i}")
-            audio_url = music.get("audio_url")
-
-            logger.info(f"Music #{i}: {title}")
-
-            if not audio_url:
-                logger.warning("Audio URL kosong, dilewati")
-                continue
-
-            filename = f"{task_id}_{i}.mp3"
-            filepath = os.path.join(SAVE_DIR, filename)
-
-            try:
-                r = await client.get(audio_url)
-                r.raise_for_status()
-
-                with open(filepath, "wb") as f:
-                    f.write(r.content)
-
-                logger.info(f"Saved: {filepath}")
-
-            except Exception as e:
-                logger.error(f"Download error ({audio_url}): {e}")
-
-    return JSONResponse({"status": "received"})
+    return response
