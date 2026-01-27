@@ -1,73 +1,116 @@
 import os
- math
-import waveimport
-import struct
-import uuid
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
+import logging
+import requests
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
-app = FastAPI(title="Simple Music Generator")
+# =====================================================
+# CONFIG
+# =====================================================
+SUNO_API_TOKEN = os.getenv("SUNO_API_TOKEN", "")
+SUNO_BASE_URL = "https://api.sunoapi.org"
 
-# Render AMAN nulis di /tmp
-AUDIO_DIR = "/tmp/audio"
-os.makedirs(AUDIO_DIR, exist_ok=True)
+APP_NAME = "Suno Music API"
 
-class GenerateRequest(BaseModel):
-    duration: int = 5  # detik (default 5)
+# =====================================================
+# LOGGING
+# =====================================================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
 
+# =====================================================
+# FASTAPI APP
+# =====================================================
+app = FastAPI(title=APP_NAME, version="1.0.0")
 
+# =====================================================
+# ROOT (CEK SERVER)
+# =====================================================
 @app.get("/")
 def root():
     return {
         "status": "ok",
+        "service": APP_NAME,
         "endpoints": {
             "generate": "POST /generate",
-            "download": "GET /download/{audio_id}"
+            "status": "GET /status/{task_id}"
         }
     }
 
-
-def generate_wav(path: str, duration: int):
-    framerate = 44100
-    frequency = 440  # nada A
-    amplitude = 12000
-
-    with wave.open(path, "w") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(framerate)
-
-        for i in range(duration * framerate):
-            value = int(amplitude * math.sin(2 * math.pi * frequency * i / framerate))
-            wav.writeframes(struct.pack("<h", value))
-
-
+# =====================================================
+# GENERATE LAGU (INI YANG BIKIN LAGU)
+# =====================================================
 @app.post("/generate")
-def generate(req: GenerateRequest):
-    if req.duration <= 0 or req.duration > 30:
-        raise HTTPException(400, "duration must be 1–30 seconds")
+async def generate_music(request: Request):
+    try:
+        body = await request.json()
+    except:
+        return JSONResponse(
+            {"error": "invalid_json"},
+            status_code=400
+        )
 
-    audio_id = str(uuid.uuid4())
-    filepath = os.path.join(AUDIO_DIR, f"{audio_id}.wav")
+    prompt = body.get("prompt")
+    if not prompt:
+        return JSONResponse(
+            {"error": "prompt_required"},
+            status_code=400
+        )
 
-    generate_wav(filepath, req.duration)
-
-    return {
-        "success": True,
-        "audio_id": audio_id,
-        "download_url": f"/download/{audio_id}"
+    payload = {
+        "customMode": True,
+        "instrumental": body.get("instrumental", False),
+        "model": body.get("model", "V4_5ALL"),
+        "prompt": prompt,
+        "style": body.get("style", "Pop"),
+        "title": body.get("title", "Generated Song"),
+        "vocalGender": body.get("vocalGender", "f")
     }
 
+    headers = {
+        "Authorization": f"Bearer {SUNO_API_TOKEN}",
+        "Content-Type": "application/json"
+    }
 
-@app.get("/download/{audio_id}")
-def download(audio_id: str):
-    filepath = os.path.join(AUDIO_DIR, f"{audio_id}.wav")
-    if not os.path.exists(filepath):
-        raise HTTPException(404, "Audio not found")
+    try:
+        r = requests.post(
+            f"{SUNO_BASE_URL}/api/v1/generate",
+            json=payload,
+            headers=headers,
+            timeout=30
+        )
+        return JSONResponse(r.json(), status_code=r.status_code)
 
-    return FileResponse(
-        filepath,
-        media_type="audio/wav",
-        filename=f"{audio_id}.wav"
-    )
+    except Exception as e:
+        logging.exception("Generate error")
+        return JSONResponse(
+            {"error": "suno_generate_failed", "message": str(e)},
+            status_code=500
+        )
+
+# =====================================================
+# CEK STATUS LAGU (AMBIL MP3)
+# =====================================================
+@app.get("/status/{task_id}")
+def check_status(task_id: str):
+    headers = {
+        "Authorization": f"Bearer {SUNO_API_TOKEN}"
+    }
+
+    try:
+        r = requests.get(
+            f"{SUNO_BASE_URL}/api/v1/generate/record-info",
+            params={"taskId": task_id},
+            headers=headers,
+            timeout=20
+        )
+        return JSONResponse(r.json(), status_code=r.status_code)
+
+    except Exception as e:
+        logging.exception("Status error")
+        return JSONResponse(
+            {"error": "status_failed", "message": str(e)},
+            status_code=500
+        )
