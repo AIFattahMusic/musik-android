@@ -104,17 +104,17 @@ if not task_id:
     )
 
 music_tasks[task_id] = {
-    "status": "PENDING",
-    "audioUrl": None,
-    "coverUrl": None,
-    "duration": None
-}
+        "status": "PENDING",
+        "audioUrl": None,
+        "coverUrl": None,
+        "duration": None
+    }
 
-return {
-    "success": True,
-    "taskId": task_id,
-    "status": "PENDING"
-}
+    return {   # ⬅️ INI WAJIB ADA DI DALAM FUNGSI
+        "success": True,
+        "taskId": task_id,
+        "status": "PENDING"
+    }
 
 # ======================
 # EXTEND MUSIC
@@ -238,6 +238,7 @@ def download(task_id: str):
         raise HTTPException(404, "Belum siap")
 
     return FileResponse(path, filename=task_id + ".mp3")
+
 
 
 
