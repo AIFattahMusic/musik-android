@@ -138,7 +138,6 @@ async def music_callback(request: Request):
         music_tasks[task_id] = payload
 
     return JSONResponse({"status": "ok"})
-        "audioId": body.audioId,
         "model": "V4_5ALL",
         "callBackUrl": CALLBACK_URL,
         "prompt": body.prompt or "Extend the music smoothly",
@@ -197,20 +196,6 @@ def check_status(task_id: str):
     }
 
 # ======================
-# CALLBACK
-# ======================
-@app.post("/music/callback")
-async def music_callback(request: Request):
-    payload = await request.json()
-
-    task_id = payload.get("taskId")
-    if not task_id:
-        return JSONResponse({"status": "ignored"})
-
-    music_tasks[task_id] = payload
-    return JSONResponse({"status": "ok"})
-
-# ======================
 # PLAY
 # ======================
 @app.get("/play/{task_id}")
@@ -231,6 +216,7 @@ def download(task_id: str):
         raise HTTPException(404, "Belum siap")
 
     return FileResponse(path, filename=task_id + ".mp3")
+
 
 
 
