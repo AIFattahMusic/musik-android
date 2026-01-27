@@ -8,16 +8,21 @@ app = FastAPI()
 # ======================
 # CONFIG
 # ======================
-SUNO_API_URL = "https://api.sunoapi.org/api/v1/generate/extend"
+SUNO_API_URL_GENERATE = "https://api.sunoapi.org/api/v1/generate"
+SUNO_API_URL_EXTEND = "https://api.sunoapi.org/api/v1/generate/extend"
 CALLBACK_URL = "https://musik-android.onrender.com/suno/callback"
-SUNO_API_TOKEN = os.getenv("SUNO_API_TOKEN")
 
+# 🔥 FALLBACK TOKEN (INI KUNCI)
+SUNO_API_TOKEN = (
+    os.getenv("SUNO_API_TOKEN")
+    or os.getenv("SUNO_TOKEN")
+)
 
 def get_headers():
     if not SUNO_API_TOKEN:
         raise HTTPException(
             status_code=500,
-            detail="SUNO_API_TOKEN belum diset di Render"
+            detail="SUNO_API_TOKEN belum terbaca di environment"
         )
 
     return {
@@ -25,34 +30,29 @@ def get_headers():
         "Content-Type": "application/json"
     }
 
-
 # ======================
-# IN-MEMORY STORE
+# IN-MEMORY DB
 # ======================
-# NOTE: Untuk production → pindah ke DB
 music_tasks = {}
-"""
-taskId: {
-    status: PENDING / SUCCESS / FAILED
-    audioUrl: str | None
-    coverUrl: str | None
-    duration: int | None
-}
-"""
-
 
 # ======================
-# SCHEMA
+# SCHEMAS
 # ======================
+class GenerateRequest(BaseModel):
+    prompt: str
+    style: str | None = "Pop"
+    title: str | None = "My Song"
+    vocalGender: str | None = None
+
+
 class ExtendRequest(BaseModel):
     audioId: str
     continueAt: int = 60
     prompt: str | None = None
     title: str | None = None
 
-
 # ======================
-# HEALTH
+# HEALTH CHECK
 # ======================
 @app.get("/")
 def health():
@@ -61,31 +61,24 @@ def health():
         "token_loaded": bool(SUNO_API_TOKEN)
     }
 
-
 # ======================
-# EXTEND MUSIC
+# GENERATE MUSIC (BARU)
 # ======================
-@app.post("/suno/extend")
-def extend_music(body: ExtendRequest):
+@app.post("/suno/generate")
+def generate_music(body: GenerateRequest):
     headers = get_headers()
 
     payload = {
-        "defaultParamFlag": True,
-        "audioId": body.audioId,
+        "prompt": body.prompt,
+        "style": body.style,
+        "title": body.title,
+        "vocalGender": body.vocalGender,
         "model": "V4_5ALL",
-        "callBackUrl": CALLBACK_URL,
-        "prompt": body.prompt or "Extend the music with more relaxing piano notes",
-        "style": "Classical",
-        "title": body.title or "Peaceful Piano Extended",
-        "continueAt": body.continueAt,
-        "styleWeight": 0.65,
-        "audioWeight": 0.65,
-        "weirdnessConstraint": 0.65,
-        "negativeTags": "harsh, noisy, dissonant"
+        "callBackUrl": CALLBACK_URL
     }
 
     response = requests.post(
-        SUNO_API_URL,
+        SUNO_API_URL_GENERATE,
         json=payload,
         headers=headers,
         timeout=30
@@ -100,7 +93,6 @@ def extend_music(body: ExtendRequest):
     data = response.json()
     task_id = data.get("taskId")
 
-    # simpan status awal
     music_tasks[task_id] = {
         "status": "PENDING",
         "audioUrl": None,
@@ -114,6 +106,54 @@ def extend_music(body: ExtendRequest):
         "status": "PENDING"
     }
 
+# ======================
+# EXTEND MUSIC
+# ======================
+@app.post("/suno/extend")
+def extend_music(body: ExtendRequest):
+    headers = get_headers()
+
+    payload = {
+        "defaultParamFlag": True,
+        "audioId": body.audioId,
+        "model": "V4_5ALL",
+        "callBackUrl": CALLBACK_URL,
+        "prompt": body.prompt or "Extend the music smoothly",
+        "title": body.title or "Extended Music",
+        "continueAt": body.continueAt,
+        "styleWeight": 0.65,
+        "audioWeight": 0.65,
+        "weirdnessConstraint": 0.65
+    }
+
+    response = requests.post(
+        SUNO_API_URL_EXTEND,
+        json=payload,
+        headers=headers,
+        timeout=30
+    )
+
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=response.text
+        )
+
+    data = response.json()
+    task_id = data.get("taskId")
+
+    music_tasks[task_id] = {
+        "status": "PENDING",
+        "audioUrl": None,
+        "coverUrl": None,
+        "duration": None
+    }
+
+    return {
+        "success": True,
+        "taskId": task_id,
+        "status": "PENDING"
+    }
 
 # ======================
 # CHECK STATUS
@@ -121,7 +161,6 @@ def extend_music(body: ExtendRequest):
 @app.get("/suno/status/{task_id}")
 def check_status(task_id: str):
     task = music_tasks.get(task_id)
-
     if not task:
         raise HTTPException(
             status_code=404,
@@ -132,7 +171,6 @@ def check_status(task_id: str):
         "taskId": task_id,
         **task
     }
-
 
 # ======================
 # CALLBACK
@@ -145,38 +183,6 @@ async def suno_callback(request: Request):
     print(payload)
 
     task_id = payload.get("taskId")
-    status = payload.get("status")
 
     if task_id not in music_tasks:
-        # callback terlambat / server restart
-        music_tasks[task_id] = {}
-
-    music_tasks[task_id].update({
-        "status": status,
-        "audioUrl": payload.get("audioUrl"),
-        "coverUrl": payload.get("coverUrl"),
-        "duration": payload.get("duration")
-    })
-
-    return {"status": "ok"}
-
-import os, psycopg2
-
-def get_conn():
-    return psycopg2.connect(os.environ["DATABASE_URL"])
-@app.get("/db-all")
-def db_all():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT *
-        FROM information_schema.tables
-        WHERE table_schema = 'public';
-    """)
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
-
-
-
+        music_tasks[task_id]
