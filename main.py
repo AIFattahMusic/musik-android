@@ -137,7 +137,7 @@ async def music_callback(request: Request):
     if task_id:
         music_tasks[task_id] = payload
 
-    return JSONResponse({"status": "ok"})        "defaultParamFlag": True,
+    return JSONResponse({"status": "ok"})
         "audioId": body.audioId,
         "model": "V4_5ALL",
         "callBackUrl": CALLBACK_URL,
@@ -231,5 +231,6 @@ def download(task_id: str):
         raise HTTPException(404, "Belum siap")
 
     return FileResponse(path, filename=task_id + ".mp3")
+
 
 
