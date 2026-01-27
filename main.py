@@ -1,193 +1,185 @@
-from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel
-import requests
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+import psycopg2
+import psycopg2.extras
+import datetime
 import os
-import time
+import uvicorn
 
-app = FastAPI()
+app = FastAPI(title="Music Android Backend")
 
-# ======================
-# CONFIG
-# ======================
-SUNO_GENERATE_URL = "https://api.sunoapi.org/api/v1/generate"
-SUNO_EXTEND_URL = "https://api.sunoapi.org/api/v1/generate/extend"
-CALLBACK_URL = "https://musik-android.onrender.com/suno/callback"
+# ======================================================
+# DATABASE CONNECTION (RENDER POSTGRES)
+# ======================================================
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
-SUNO_API_TOKEN = (
-    os.getenv("SUNO_API_TOKEN")
-    or os.getenv("SUNO_TOKEN")
-)
+conn = psycopg2.connect(DATABASE_URL, sslmode="require")
 
-def get_headers():
-    if not SUNO_API_TOKEN:
-        raise HTTPException(
-            status_code=500,
-            detail="SUNO_API_TOKEN tidak terbaca"
+def get_cursor():
+    return conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+# ======================================================
+# INIT TABLE (AUTO)
+# ======================================================
+with get_cursor() as cur:
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS songs (
+            task_id TEXT PRIMARY KEY,
+            title TEXT,
+            audio_url TEXT,
+            cover_url TEXT,
+            lyrics TEXT,
+            status TEXT,
+            created_at TIMESTAMP
         )
-    return {
-        "Authorization": f"Bearer {SUNO_API_TOKEN}",
-        "Content-Type": "application/json"
-    }
+    """)
+    conn.commit()
 
-# ======================
-# MEMORY STORE
-# ======================
-# NOTE: Render restart = data hilang
-music_tasks = {}
-
-# ======================
-# SCHEMA
-# ======================
-class GenerateRequest(BaseModel):
-    prompt: str
-    style: str | None = "Pop"
-    title: str | None = "My Song"
-    vocalGender: str | None = None
-
-class ExtendRequest(BaseModel):
-    audioId: str
-    continueAt: int = 60
-
-# ======================
-# HEALTH
-# ======================
+# ======================================================
+# HEALTH CHECK
+# ======================================================
 @app.get("/")
-def health():
-    return {
-        "status": "ok",
-        "token_loaded": bool(SUNO_API_TOKEN),
-        "songs_saved": len(music_tasks)
-    }
+def root():
+    return {"status": "alive"}
 
-# ======================
-# GENERATE MUSIC
-# ======================
-@app.post("/suno/generate")
-def generate_music(body: GenerateRequest):
-    headers = get_headers()
-
-    payload = {
-        "prompt": body.prompt,
-        "style": body.style,
-        "title": body.title,
-        "vocalGender": body.vocalGender,
-        "model": "V4_5ALL",
-        "callBackUrl": CALLBACK_URL
-    }
-
-    response = requests.post(
-        SUNO_GENERATE_URL,
-        json=payload,
-        headers=headers,
-        timeout=30
-    )
-
-    if response.status_code != 200:
-        raise HTTPException(
-            status_code=response.status_code,
-            detail=response.text
-        )
-
-    # ⚠️ JANGAN CARI taskId DI SINI
-    return {
-        "success": True,
-        "status": "PENDING",
-        "message": "Generate dikirim. Menunggu callback Suno."
-    }
-
-# ======================
-# EXTEND MUSIC
-# ======================
-@app.post("/suno/extend")
-def extend_music(body: ExtendRequest):
-    headers = get_headers()
-
-    payload = {
-        "defaultParamFlag": True,
-        "audioId": body.audioId,
-        "model": "V4_5ALL",
-        "continueAt": body.continueAt,
-        "callBackUrl": CALLBACK_URL
-    }
-
-    response = requests.post(
-        SUNO_EXTEND_URL,
-        json=payload,
-        headers=headers,
-        timeout=30
-    )
-
-    if response.status_code != 200:
-        raise HTTPException(
-            status_code=response.status_code,
-            detail=response.text
-        )
-
-    return {
-        "success": True,
-        "status": "PENDING",
-        "message": "Extend dikirim. Menunggu callback Suno."
-    }
-
-# ======================
-# CALLBACK (INI INTINYA)
-# ======================
+# ======================================================
+# SUNO CALLBACK
+# ======================================================
 @app.post("/suno/callback")
 async def suno_callback(request: Request):
     try:
         payload = await request.json()
-    except Exception:
-        return {"status": "ignored"}
+        print("🔔 SUNO CALLBACK:", payload)
 
-    print("SUNO CALLBACK RAW:", payload)
+        callback_type = payload.get("callbackType")
+        task_id = payload.get("task_id") or payload.get("id")
 
-    data = payload.get("data", {})
+        audio_url = (
+            payload.get("audio_url")
+            or payload.get("data", {}).get("audio_url")
+        )
+
+        lyrics = (
+            payload.get("lyrics")
+            or payload.get("data", {}).get("lyrics")
+        )
+
+        if not task_id:
+            return {"status": "ignored"}
+
+        with get_cursor() as cur:
+            cur.execute("""
+                INSERT INTO songs (task_id, status, created_at)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (task_id) DO NOTHING
+            """, (
+                task_id,
+                "processing",
+                datetime.datetime.utcnow()
+            ))
+
+            if callback_type == "completed" and audio_url:
+                cur.execute("""
+                    UPDATE songs
+                    SET audio_url=%s, lyrics=%s, status=%s
+                    WHERE task_id=%s
+                """, (
+                    audio_url,
+                    lyrics,
+                    "completed",
+                    task_id
+                ))
+
+            conn.commit()
+
+        print("✅ CALLBACK STORED:", task_id)
+        return JSONResponse(status_code=200, content={"status": "ok"})
+
+    except Exception as e:
+        print("❌ CALLBACK ERROR:", str(e))
+        return JSONResponse(
+            status_code=200,
+            content={"status": "error", "message": str(e)}
+        )
+
+# ======================================================
+# CREATE SONG (ANDROID)
+# ======================================================
+@app.post("/song/create")
+async def create_song(data: dict):
     task_id = data.get("task_id")
 
     if not task_id:
-        return {"status": "no_task_id"}
-
-    songs = data.get("data", [])
-    if not songs:
-        return {"status": "no_songs"}
-
-    # simpan SEMUA lagu
-    music_tasks[task_id] = {
-        "status": "SUCCESS",
-        "songs": []
-    }
-
-    for song in songs:
-        music_tasks[task_id]["songs"].append({
-            "audio_id": song.get("id"),
-            "audio_url": song.get("audio_url"),
-            "stream_url": song.get("stream_audio_url"),
-            "image_url": song.get("image_url"),
-            "title": song.get("title"),
-            "prompt": song.get("prompt"),
-            "duration": song.get("duration"),
-            "model": song.get("model_name"),
-            "created_at": song.get("createTime")
-        })
-
-    return {"status": "ok"}
-
-# ======================
-# GET ALL SONGS
-# ======================
-@app.get("/suno/all")
-def get_all_songs():
-    return music_tasks
-
-# ======================
-# GET SONG BY TASK
-# ======================
-@app.get("/suno/task/{task_id}")
-def get_task(task_id: str):
-    task = music_tasks.get(task_id)
-    if not task:
-        raise HTTPException(
-            status_code=404,
-            detail="Task tidak ditemukan"
+        return JSONResponse(
+            status_code=400,
+            content={"error": "task_id required"}
         )
-    return task
+
+    with get_cursor() as cur:
+        cur.execute("""
+            INSERT INTO songs
+            (task_id, title, cover_url, lyrics, status, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (task_id) DO NOTHING
+        """, (
+            task_id,
+            data.get("title", "Untitled Song"),
+            data.get("cover_url"),
+            data.get("lyrics"),
+            "processing",
+            datetime.datetime.utcnow()
+        ))
+        conn.commit()
+
+    return {"task_id": task_id, "status": "processing"}
+
+# ======================================================
+# GET SONG (ANDROID POLLING)
+# ======================================================
+@app.get("/song/{task_id}")
+def get_song(task_id: str):
+    with get_cursor() as cur:
+        cur.execute("SELECT * FROM songs WHERE task_id=%s", (task_id,))
+        song = cur.fetchone()
+
+    if not song:
+        return JSONResponse(
+            status_code=404,
+            content={"error": "song not found"}
+        )
+
+    return song
+
+# ======================================================
+# LIST SONGS
+# ======================================================
+@app.get("/songs")
+def list_songs():
+    with get_cursor() as cur:
+        cur.execute("SELECT * FROM songs ORDER BY created_at DESC")
+        songs = cur.fetchall()
+    return songs
+
+# ======================================================
+# UPDATE COVER ART
+# ======================================================
+@app.post("/song/{task_id}/cover")
+async def update_cover(task_id: str, data: dict):
+    with get_cursor() as cur:
+        cur.execute("""
+            UPDATE songs SET cover_url=%s WHERE task_id=%s
+        """, (data.get("cover_url"), task_id))
+        conn.commit()
+
+    return {"status": "updated"}
+
+# ======================================================
+# RENDER ENTRYPOINT
+# ======================================================
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=port
+    )
