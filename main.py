@@ -1,28 +1,12 @@
 import os
 import requests
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
 
-# ======================
-# APP
-# ======================
-app = FastAPI(title="Suno Music Render API")
+app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ======================
-# CONFIG
-# ======================
-SUNO_API_URL = SUNO_API_URL = "https://api.sunoapi.org/api/v1/generate"
 SUNO_TOKEN = os.getenv("SUNO_TOKEN")
-
+SUNO_API_URL = "https://api.sunoapi.org/api/v1/generate/music"
 BASE_URL = "https://musik-android.onrender.com"
 
 HEADERS = {
@@ -31,83 +15,66 @@ HEADERS = {
     "Accept": "application/json",
 }
 
-# ======================
-# DB SEDERHANA (RAM)
-# ======================
-DB = []
+DB = []  # simpan hasil callback di memory
 
-# ======================
-# MODEL REQUEST
-# ======================
+
 class GenerateRequest(BaseModel):
-    title: str
     prompt: str
     tags: str | None = None
 
-# ======================
-# HEALTH CHECK
-# ======================
+
 @app.get("/")
 def root():
     return {"status": "ok"}
 
+
 # ======================
-# GENERATE SONG
+# GENERATE MUSIC
 # ======================
 @app.post("/generate/full-song")
-def generate_full_song(data: GenerateRequest):
+def generate_song(data: GenerateRequest):
     payload = {
         "prompt": data.prompt,
-        "title": data.title,
         "tags": data.tags or "",
-        "model": "chirp-v3-5",
-        "customMode": False,
-        "instrumental": False,
+        "model": "chirp-v3-5",              # ✅ MODEL RESMI
         "callBackUrl": f"{BASE_URL}/callback"
     }
 
-    try:
-        r = requests.post(
-            SUNO_API_URL,
-            headers=HEADERS,
-            json=payload,
-            timeout=60,
-        )
-    except requests.RequestException as e:
-        raise HTTPException(502, f"Gagal koneksi ke Suno: {e}")
+    r = requests.post(
+        SUNO_API_URL,
+        headers=HEADERS,
+        json=payload,
+        timeout=60
+    )
 
-    if r.status_code >= 400:
+    if r.status_code != 200:
         raise HTTPException(r.status_code, r.text)
 
     return r.json()
+
 
 # ======================
 # CALLBACK SUNO
 # ======================
 @app.post("/callback")
 async def callback(request: Request):
-    body = await request.body()
-    if not body:
-        return {"ok": True}
+    body = await request.json()
 
-    data = await request.json()
-
-    if data.get("status") == "completed":
-        DB.append({
-            "task_id": data.get("id"),
-            "title": data.get("title"),
-            "audio_url": data.get("audio_url"),
-            "image_url": data.get("image_url"),
-        })
+    if body.get("code") == 200 and body["data"]["callbackType"] == "complete":
+        for item in body["data"]["data"]:
+            DB.append({
+                "title": item["title"],
+                "audio_url": item["audio_url"],
+                "image_url": item["image_url"],
+                "duration": item["duration"],
+            })
 
     return {"ok": True}
 
+
 # ======================
-# LIHAT ISI DB
+# LIHAT HASIL / DOWNLOAD
 # ======================
 @app.get("/songs")
-def list_songs():
+def songs():
     return DB
-
-
-
