@@ -54,7 +54,7 @@ class GenerateRequest(BaseModel):
     prompt: str                   # DESKRIPSI
     lyrics: str                   # LIRIK FULL
     tags: str | None = None
-    model: str = "v4_5"
+    model: str = "v3_5"
 
 # =====================================================
 # HEALTH CHECK
@@ -75,7 +75,7 @@ def generate_full_song(data: GenerateRequest):
     "tags": data.tags or "reggae",
     "customMode": False,
     "instrumental": False,
-    "model": data.model or "v4_5",
+    "model": data.model or "v3_5",
     "callBackUrl": f"{BASE_URL}/callback"
 }
 
@@ -261,6 +261,7 @@ async def callback(request: Request):
 @app.get("/db-all")
 def db_all():
     return DB if DB else []
+
 
 
 
