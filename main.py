@@ -96,7 +96,21 @@ async def generate_music(body: GenerateRequest):
             status_code=502,
             detail=f"Suno balas non-JSON: {resp.text}",
         )
+@app.get("/music/status/{task_id}")
+def get_music_status(task_id: str):
+    task = music_tasks.get(task_id)
 
+    if not task:
+        raise HTTPException(
+            status_code=404,
+            detail="Task ID tidak ditemukan",
+        )
+
+    return {
+        "taskId": task_id,
+        "status": task["status"],
+        "data": task.get("data"),
+    }
     task_id = (
         data.get("taskId")
         or data.get("data", {}).get("taskId")
@@ -120,3 +134,4 @@ async def generate_music(body: GenerateRequest):
         "status": "queued",
         "taskId": task_id,
     }
+
