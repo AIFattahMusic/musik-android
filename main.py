@@ -158,29 +158,23 @@ app = FastAPI()
 
 @app.post("/callback")
 async def callback(request: Request):
-    try:
-        body = await request.body()
+    body = await request.body()
 
-        # Kalau body kosong
-        if not body:
-            print("CALLBACK EMPTY BODY")
-            return {"ok": True}
+    if not body:
+        print("CALLBACK EMPTY BODY")
+        return {"ok": True}
 
-        data = await request.json()
-        print("CALLBACK DATA:", data)
+    data = await request.json()
+    print("CALLBACK DATA:", data)
 
-        # Ambil audio kalau sudah selesai
-        if data.get("status") == "completed":
-            audio_url = data.get("audio_url")
-            if audio_url:
-                print("AUDIO URL:", audio_url)
-                # simpan ke DB / tampilkan ke user
+    if data.get("status") == "completed":
+        audio_url = data.get("audio_url")
+        if audio_url:
+            RESULTS["latest"] = audio_url
+            print("AUDIO SAVED:", audio_url)
 
-    except Exception as e:
-        print("CALLBACK ERROR:", e)
-
-    # PENTING: JANGAN PERNAH ERROR
     return {"ok": True}
+
 
     audio_urls = find_audio_urls(latest)
     status_guess = guess_status(latest)
@@ -203,6 +197,7 @@ async def callback(request: Request):
     }
 
                             
+
 
 
 
