@@ -72,8 +72,8 @@ def generate_full_song(data: GenerateRequest):
      "title": data.title or "Untitled Song",
     "prompt": data.prompt or "Create a song",
     "lyrics": data.lyrics or "",
-    "tags": data.tags or "pop",
-    "customMode": True,
+    "tags": data.tags or "reggae",
+    "customMode": False,
     "instrumental": False,
     "model": data.model or "v4_5",
     "callBackUrl": f"{BASE_URL}/callback"
@@ -261,6 +261,7 @@ async def callback(request: Request):
 @app.get("/db-all")
 def db_all():
     return DB if DB else []
+
 
 
 
