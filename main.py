@@ -187,46 +187,6 @@ def download_mp3(task_id: str):
         media_type="audio/mpeg",
         filename=f"{task_id}.mp3",
     )
-from fastapi import FastAPI
-from pydantic import BaseModel
-
-class Item(BaseModel):
-    name: str
-    value: str
-
-data_store = []
-
-@app.post("/add")
-def add(item: Item):
-    data_store.append(item)
-    return item
-
-@app.get("/db-all")
-def all():
-    return data_store
-
-import os, psycopg2
-
-def get_conn():
-    return psycopg2.connect(os.environ["DATABASE_URL"])
-@app.get("/db-all")
-def db_all():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT *
-        FROM information_schema.tables
-        WHERE table_schema = 'public';
-    """)
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
-
-import requests
-import os
-
-app = FastAPI(title="Music Generator")
 
 # ======================
 # CONFIG
@@ -298,5 +258,6 @@ async def callback(request: Request):
 @app.get("/db-all")
 def db_all():
     return DB if DB else []
+
 
 
