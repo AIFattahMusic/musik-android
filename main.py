@@ -20,7 +20,7 @@ app.add_middleware(
 # ======================
 # CONFIG
 # ======================
-SUNO_API_URL = "https://api.sunoapi.org/api/v1/generate/
+SUNO_API_URL = SUNO_API_URL = "https://api.sunoapi.org/api/v1/generate"
 SUNO_TOKEN = os.getenv("SUNO_TOKEN")
 
 BASE_URL = "https://musik-android.onrender.com"
@@ -107,4 +107,5 @@ async def callback(request: Request):
 @app.get("/songs")
 def list_songs():
     return DB
+
 
