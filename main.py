@@ -68,7 +68,6 @@ def root():
 # =====================================================
 @app.post("/generate/full-song")
 def generate_full_song(data: GenerateRequest):
-    payload = {
      payload = {
     "title": data.title or "Untitled Song",
     "prompt": data.prompt or "Create a song",
@@ -260,6 +259,7 @@ async def callback(request: Request):
 @app.get("/db-all")
 def db_all():
     return DB if DB else []
+
 
 
 
