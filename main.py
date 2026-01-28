@@ -6,6 +6,9 @@ import os
 
 app = FastAPI()
 
+# ======================
+# CONFIG
+# ======================
 API_URL_GENERATE = "https://api.sunoapi.org/api/v1/generate"
 CALLBACK_URL = "https://musik-android.onrender.com/music/callback"
 
@@ -14,6 +17,9 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 
 music_tasks = {}
 
+# ======================
+# MODELS
+# ======================
 class GenerateRequest(BaseModel):
     prompt: str
     style: str | None = None
@@ -23,7 +29,9 @@ class GenerateRequest(BaseModel):
     class Config:
         populate_by_name = True
 
-
+# ======================
+# HEADERS
+# ======================
 def get_headers():
     token = os.getenv("SUNO_TOKEN")
     if not token:
@@ -34,12 +42,16 @@ def get_headers():
         "Content-Type": "application/json"
     }
 
-
+# ======================
+# ROOT
+# ======================
 @app.get("/")
 def root():
     return {"status": "ok"}
 
-
+# ======================
+# GENERATE MUSIC
+# ======================
 @app.post("/music/generate")
 def generate_music(body: GenerateRequest):
     headers = get_headers()
@@ -71,9 +83,14 @@ def generate_music(body: GenerateRequest):
 
     music_tasks[task_id] = {"status": "PENDING"}
 
-    return {"taskId": task_id}
+    return {
+        "success": True,
+        "taskId": task_id
+    }
 
-
+# ======================
+# CALLBACK
+# ======================
 @app.post("/music/callback")
 async def music_callback(request: Request):
     payload = await request.json()
@@ -92,11 +109,27 @@ async def music_callback(request: Request):
     with open(path, "wb") as f:
         f.write(audio.content)
 
-    music_tasks[task_id] = {"status": "DONE"}
+    music_tasks[task_id] = {
+        "status": "DONE",
+        "audioUrl": audio_url
+    }
 
     return {"ok": True}
 
+# ======================
+# CHECK STATUS
+# ======================
+@app.get("/music/status/{task_id}")
+def check_status(task_id: str):
+    task = music_tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, "Task ID tidak ditemukan")
 
+    return {"taskId": task_id, **task}
+
+# ======================
+# PLAY
+# ======================
 @app.get("/play/{task_id}")
 def play(task_id: str):
     path = os.path.join(SAVE_DIR, f"{task_id}.mp3")
@@ -104,6 +137,17 @@ def play(task_id: str):
         raise HTTPException(404, "Audio belum siap")
 
     return FileResponse(path, media_type="audio/mpeg")
+
+# ======================
+# DOWNLOAD
+# ======================
+@app.get("/download/{task_id}")
+def download(task_id: str):
+    path = os.path.join(SAVE_DIR, f"{task_id}.mp3")
+    if not os.path.exists(path):
+        raise HTTPException(404, "Audio belum siap")
+
+    return FileResponse(path, filename=f"{task_id}.mp3")    return FileResponse(path, media_type="audio/mpeg")
 
 
 @app.get("/download/{task_id}")
@@ -294,6 +338,7 @@ def download(task_id: str):
         raise HTTPException(404, "Belum siap")
 
     return FileResponse(path, filename=task_id + ".mp3")
+
 
 
 
