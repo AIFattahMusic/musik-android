@@ -57,12 +57,13 @@ def root():
 @app.post("/generate/full-song")
 def generate_full_song(data: GenerateRequest):
     payload = {
-        "title": data.title or "Untitled Song",
-        "prompt": data.prompt or "Create a song",
-        "tags": data.tags or "reggae",
+        "prompt": data.prompt,
+        "title": data.title,
+        "tags": data.tags or "",
+        "model": "chirp-v3-5",
         "customMode": False,
         "instrumental": False,
-        "callbackUrl": f"{BASE_URL}/callback",
+        "callBackUrl": f"{BASE_URL}/callback"
     }
 
     try:
@@ -107,5 +108,6 @@ async def callback(request: Request):
 @app.get("/songs")
 def list_songs():
     return DB
+
 
 
