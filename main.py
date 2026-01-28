@@ -55,7 +55,6 @@ def root():
 # ======================
 @app.post("/music/generate")
 async def generate_music(body: GenerateRequest):
-    # ⛔ JANGAN kirim field None ke Suno
     payload = {
         "prompt": body.prompt,
         "model": "chirp-v3-5",
@@ -82,12 +81,41 @@ async def generate_music(body: GenerateRequest):
             detail=f"Koneksi ke Suno gagal: {str(e)}",
         )
 
-    # Log mentah (penting saat debug)
     if resp.status_code >= 400:
         raise HTTPException(
             status_code=502,
             detail=f"Suno error {resp.status_code}: {resp.text}",
         )
+
+    try:
+        data = resp.json()
+    except Exception:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Suno balas non-JSON: {resp.text}",
+        )
+
+    task_id = (
+        data.get("taskId")
+        or data.get("data", {}).get("taskId")
+        or data.get("data", {}).get("task_id")
+    )
+
+    if not task_id:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Tidak ada taskId dari Suno: {data}",
+        )
+
+    music_tasks[task_id] = {
+        "status": "pending",
+        "title": body.title,
+    }
+
+    return {
+        "status": "queued",
+        "taskId": task_id,
+    }
 
     try:
         data = resp.json()
@@ -134,5 +162,6 @@ def get_music_status(task_id: str):
         "status": "queued",
         "taskId": task_id,
     }
+
 
 
