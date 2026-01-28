@@ -180,8 +180,6 @@ def download_mp3(task_id: str):
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-app = FastAPI()
-
 class Item(BaseModel):
     name: str
     value: str
@@ -214,3 +212,4 @@ def db_all():
     cur.close()
     conn.close()
     return rows
+
