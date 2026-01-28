@@ -152,44 +152,35 @@ def generate_music(body: GenerateRequest):
             "suno_response": resp,
             "next_step": "Tunggu 10-60 detik lalu cek GET /music/status"
         }
+from fastapi import FastAPI, Request
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
+app = FastAPI()
 
 @app.post("/callback")
 async def callback(request: Request):
-    """
-    Suno akan POST hasil ke sini
-    """
-    data = await request.json()
+    try:
+        body = await request.body()
 
-    task_id = guess_task_id(data)
-    key = task_id if task_id else "latest"
+        # Kalau body kosong
+        if not body:
+            print("CALLBACK EMPTY BODY")
+            return {"ok": True}
 
-    RESULTS[key] = data
-    RESULTS["latest"] = data
+        data = await request.json()
+        print("CALLBACK DATA:", data)
 
-    print("=== CALLBACK FROM SUNO ===")
-    print(json.dumps(data, indent=2))
+        # Ambil audio kalau sudah selesai
+        if data.get("status") == "completed":
+            audio_url = data.get("audio_url")
+            if audio_url:
+                print("AUDIO URL:", audio_url)
+                # simpan ke DB / tampilkan ke user
 
-    return {"status": "ok", "saved_as": key}
+    except Exception as e:
+        print("CALLBACK ERROR:", e)
 
-
-@app.get("/music/status")
-def music_status():
-    """
-    Cek status:
-    - pending kalau belum ada audio_url
-    - done kalau sudah ada audio_url
-    """
-    latest = RESULTS.get("latest")
-
-    if not latest:
-        return {
-            "status": "pending",
-            "message": "Belum ada callback masuk ke /callback. Pastikan app Render kamu ON dan URL callback benar."
-        }
+    # PENTING: JANGAN PERNAH ERROR
+    return {"ok": True}
 
     audio_urls = find_audio_urls(latest)
     status_guess = guess_status(latest)
@@ -212,4 +203,5 @@ def music_status():
     }
 
                             
+
 
