@@ -1,47 +1,18 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
 import httpx
 import os
-from typing import Dict, Optional
+
+app = FastAPI()
 
 # ======================
 # CONFIG
 # ======================
-API_URL_GENERATE = "https://api.sunoapi.org/api/v1/generate"
-CALLBACK_URL = "https://musik-android.onrender.com/music/callback"
-
 SUNO_TOKEN = os.getenv("SUNO_TOKEN")
 if not SUNO_TOKEN:
-    raise RuntimeError("SUNO_TOKEN belum diset di Render")
+    raise RuntimeError("SUNO_TOKEN belum diset")
 
-# ======================
-# APP
-# ======================
-app = FastAPI(title="Music Generator API")
-
-# task_id -> metadata
-music_tasks: Dict[str, dict] = {}
-
-# ======================
-# MODELS
-# ======================
-class GenerateRequest(BaseModel):
-    prompt: str
-    style: Optional[str] = None
-    title: Optional[str] = None
-    vocal_gender: Optional[str] = Field(default=None, alias="vocalGender")
-
-    class Config:
-        populate_by_name = True
-
-# ======================
-# HEADERS
-# ======================
-def get_headers():
-    return {
-        "Authorization": f"Bearer {SUNO_TOKEN}",
-        "Accept": "application/json",
-    }
+API_GENERATE = "https://api.sunoapi.org/api/v1/generate"
+API_STATUS = "https://api.sunoapi.org/api/v1/status"
 
 # ======================
 # ROOT
@@ -51,49 +22,32 @@ def root():
     return {"status": "ok"}
 
 # ======================
-# GENERATE MUSIC
+# GENERATE LAGU
 # ======================
 @app.post("/music/generate")
-async def generate_music(body: GenerateRequest):
+async def generate_music(body: dict):
+    if "prompt" not in body:
+        raise HTTPException(400, "prompt wajib ada")
+
     payload = {
-        "prompt": body.prompt,
+        "prompt": body["prompt"],
         "model": "chirp-v3-5",
-        "callbackUrl": CALLBACK_URL,
     }
 
-    if body.style:
-        payload["style"] = body.style
-    if body.title:
-        payload["title"] = body.title
-    if body.vocal_gender:
-        payload["vocalGender"] = body.vocal_gender
-
-    try:
-        async with httpx.AsyncClient(timeout=90) as client:
-            resp = await client.post(
-                API_URL_GENERATE,
-                json=payload,
-                headers=get_headers(),
-            )
-    except Exception as e:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Koneksi ke Suno gagal: {str(e)}",
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(
+            API_GENERATE,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {SUNO_TOKEN}",
+                "Accept": "application/json",
+            },
         )
 
     if resp.status_code >= 400:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Suno error {resp.status_code}: {resp.text}",
-        )
+        raise HTTPException(resp.status_code, resp.text)
 
-    try:
-        data = resp.json()
-    except Exception:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Suno balas non-JSON: {resp.text}",
-        )
+    data = resp.json()
 
     task_id = (
         data.get("taskId")
@@ -102,8 +56,33 @@ async def generate_music(body: GenerateRequest):
     )
 
     if not task_id:
-        raise HTTPException(
-            status_code=502,
+        raise HTTPException(500, data)
+
+    return {
+        "taskId": task_id,
+        "note": "Gunakan /music/status/{taskId} untuk ambil lagu & lirik"
+    }
+
+# ======================
+# CEK STATUS + HASIL
+# ======================
+@app.get("/music/status/{task_id}")
+async def music_status(task_id: str):
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.get(
+            f"{API_STATUS}/{task_id}",
+            headers={
+                "Authorization": f"Bearer {SUNO_TOKEN}",
+                "Accept": "application/json",
+            },
+        )
+
+    if resp.status_code >= 400:
+        raise HTTPException(resp.status_code, resp.text)
+
+    data = resp.json()
+
+    return data            status_code=502,
             detail=f"Tidak ada taskId dari Suno: {data}",
         )
 
@@ -162,6 +141,7 @@ def get_music_status(task_id: str):
         "status": "queued",
         "taskId": task_id,
     }
+
 
 
 
