@@ -88,8 +88,8 @@ def generate_full_song(data: GenerateRequest):
     except requests.RequestException as e:
         raise HTTPException(502, f"Gagal koneksi ke Suno: {e}")
 
-    if r.status_code != 200:
-        raise HTTPException(r.status_code, r.text)
+    if r.status_code >= 400:
+    raise HTTPException(r.status_code, r.text)
 
     res = r.json()
     if res.get("code") != 200:
@@ -259,6 +259,7 @@ async def callback(request: Request):
 @app.get("/db-all")
 def db_all():
     return DB if DB else []
+
 
 
 
