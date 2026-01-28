@@ -69,14 +69,14 @@ def root():
 @app.post("/generate/full-song")
 def generate_full_song(data: GenerateRequest):
     payload = {
-    "title": data.title,          # ← JUDUL LAGU
-    "prompt": data.prompt,        # ← DESKRIPSI / IDE LAGU
-    "lyrics": data.lyrics,        # ← LIRIK (WAJIB kalau customMode true)
-    "tags": data.tags,            # genre, mood
-    "customMode": True,           # ⬅️ PENTING
-    "instrumental": False,        # ⬅️ PENTING (biar ada vokal)
-    "model": data.model,
-    "callBackUrl": f"{BASE_URL}/callback",
+     "title": data.title or "Untitled Song",
+    "prompt": data.prompt or "Create a song",
+    "lyrics": data.lyrics or "",
+    "tags": data.tags or "pop",
+    "customMode": True,
+    "instrumental": False,
+    "model": data.model or "v4_5",
+    "callBackUrl": f"{BASE_URL}/callback"
 }
 
 
@@ -261,6 +261,7 @@ async def callback(request: Request):
 @app.get("/db-all")
 def db_all():
     return DB if DB else []
+
 
 
 
