@@ -69,13 +69,12 @@ def root():
 @app.post("/generate/full-song")
 def generate_full_song(data: GenerateRequest):
     payload = {
-     "title": data.title or "Untitled Song",
+     payload = {
+    "title": data.title or "Untitled Song",
     "prompt": data.prompt or "Create a song",
-    "lyrics": data.lyrics or "",
     "tags": data.tags or "reggae",
     "customMode": False,
     "instrumental": False,
-    "model": data.model or "v3_5",
     "callBackUrl": f"{BASE_URL}/callback"
 }
 
@@ -261,6 +260,7 @@ async def callback(request: Request):
 @app.get("/db-all")
 def db_all():
     return DB if DB else []
+
 
 
 
