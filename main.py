@@ -99,13 +99,23 @@ def generate_full_song(data: GenerateRequest):
 # =====================================================
 # CALLBACK SUNO (FULL AKTIF)
 # =====================================================
-@app.post("/generate/callback")
-async def generate_callback(req: Request):
-    payload = await req.json()
+@app.post("/callback")
+async def callback(request: Request):
+    body = await request.body()
+    if not body:
+        return {"ok": True}
 
-    # Validasi callback
-    if payload.get("code") != 200:
-        return {"status": "ignored"}
+    data = await request.json()
+
+    if data.get("status") == "completed":
+        DB.append({
+            "task_id": data.get("id"),
+            "title": data.get("title"),
+            "audio_url": data.get("audio_url"),
+            "image_url": data.get("image_url"),
+        })
+
+    return {"ok": True}
 
     data = payload.get("data", {})
     task_id = data.get("task_id")
@@ -288,4 +298,5 @@ async def callback(request: Request):
 @app.get("/db-all")
 def db_all():
     return DB if DB else []
+
 
