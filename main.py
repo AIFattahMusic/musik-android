@@ -128,10 +128,10 @@ def check_status(task_id: str):
 # ======================
 # CALLBACK
 # ======================
-@app.post("/music/callback")
+@ app.post("/music/callback")
 async def music_callback(request: Request):
     payload = await request.json()
-    print("📥 CALLBACK:", payload)
+    print("📦 CALLBACK:", payload)
 
     task_id = payload.get("taskId")
     if task_id:
@@ -143,6 +143,26 @@ async def music_callback(request: Request):
         headers=headers,
         timeout=30
     )
+
+    if response.status_code != 200:
+        raise HTTPException(response.status_code, response.text)
+
+    data = response.json()
+
+    task_id = (
+        data.get("taskId")
+        or data.get("data", {}).get("taskId")
+    )
+
+    if not task_id:
+        raise HTTPException(500, "API tidak mengembalikan taskId")
+
+    music_tasks[task_id] = {
+        "status": "PENDING",
+        "audioUrl": None,
+    }
+
+    return {"ok": True}
 
     if response.status_code != 200:
         raise HTTPException(response.status_code, response.text)
@@ -205,6 +225,7 @@ def download(task_id: str):
         raise HTTPException(404, "Belum siap")
 
     return FileResponse(path, filename=task_id + ".mp3")
+
 
 
 
