@@ -50,11 +50,11 @@ os.makedirs(GENERATED_DIR, exist_ok=True)
 # MODEL
 # =====================================================
 class GenerateRequest(BaseModel):
-    prompt: str
+    title: str                    # JUDUL
+    prompt: str                   # DESKRIPSI
+    lyrics: str                   # LIRIK FULL
     tags: str | None = None
-    custom_mode: bool = False
-    instrumental: bool = False
-    model: str = "V4_5"
+    model: str = "v4_5"
 
 # =====================================================
 # HEALTH CHECK
@@ -69,13 +69,16 @@ def root():
 @app.post("/generate/full-song")
 def generate_full_song(data: GenerateRequest):
     payload = {
-        "prompt": data.prompt,
-        "tags": data.tags,
-        "customMode": data.custom_mode,
-        "instrumental": data.instrumental,
-        "model": data.model,
-        "callBackUrl": f"{BASE_URL}/generate/callback",
-    }
+    "title": data.title,          # ← JUDUL LAGU
+    "prompt": data.prompt,        # ← DESKRIPSI / IDE LAGU
+    "lyrics": data.lyrics,        # ← LIRIK (WAJIB kalau customMode true)
+    "tags": data.tags,            # genre, mood
+    "customMode": True,           # ⬅️ PENTING
+    "instrumental": False,        # ⬅️ PENTING (biar ada vokal)
+    "model": data.model,
+    "callBackUrl": f"{BASE_URL}/callback",
+}
+
 
     try:
         r = requests.post(
@@ -258,6 +261,7 @@ async def callback(request: Request):
 @app.get("/db-all")
 def db_all():
     return DB if DB else []
+
 
 
 
