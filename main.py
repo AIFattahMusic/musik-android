@@ -6,7 +6,7 @@ from pydantic import BaseModel
 app = FastAPI()
 
 SUNO_TOKEN = os.getenv("SUNO_TOKEN")
-SUNO_API_URL = "https://api.sunoapi.org/api/v1/generate/music"
+SUNO_API_URL = "https://api.sunoapi.org/api/v1/generate"
 BASE_URL = "https://musik-android.onrender.com"
 
 HEADERS = {
@@ -78,3 +78,4 @@ async def callback(request: Request):
 @app.get("/songs")
 def songs():
     return DB
+
