@@ -61,29 +61,52 @@ async def generate_music(body: GenerateRequest):
         "style": body.style,
         "title": body.title,
         "vocalGender": body.vocal_gender,
-        "model": "V4_5ALL",
+        "model": "chirp-v3-5",
         "callBackUrl": CALLBACK_URL
     }
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            API_URL_GENERATE,
-            json=payload,
-            headers=get_headers()
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                API_URL_GENERATE,
+                json=payload,
+                headers=get_headers()
+            )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Gagal koneksi ke Suno API: {str(e)}"
         )
 
-    if not resp.ok:
-        raise HTTPException(502, resp.text)
+    # 🔥 INI YANG BENAR
+    if resp.status_code >= 400:
+        raise HTTPException(
+            status_code=resp.status_code,
+            detail=resp.text
+        )
 
     data = resp.json()
-    task_id = data.get("taskId") or data.get("data", {}).get("taskId")
+
+    task_id = (
+        data.get("taskId")
+        or data.get("data", {}).get("taskId")
+        or data.get("data", {}).get("task_id")
+    )
 
     if not task_id:
-        raise HTTPException(500, f"Tidak ada taskId: {data}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Response Suno tidak valid: {data}"
+        )
 
     music_tasks[task_id] = {
         "status": "PENDING",
         "files": []
+    }
+
+    return {
+        "success": True,
+        "taskId": task_id
     }
 
     return {"success": True, "taskId": task_id}
@@ -179,3 +202,4 @@ def download(task_id: str, index: int):
         raise HTTPException(404, "Audio belum siap")
 
     return FileResponse(path, filename=f"{task_id}_{index}.mp3")
+
