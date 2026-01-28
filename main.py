@@ -139,7 +139,7 @@ def generate_music(body: GenerateRequest):
         "Accept": "application/json"
     }
 
-    try:
+   
         r = requests.post(SUNO_API_URL, json=payload, headers=headers, timeout=60)
         resp = r.json()
         task_id = guess_task_id(resp)
@@ -203,5 +203,6 @@ async def callback(request: Request):
     }
 
                             
+
 
 
