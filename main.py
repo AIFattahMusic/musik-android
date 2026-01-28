@@ -213,3 +213,79 @@ def db_all():
     conn.close()
     return rows
 
+import requests
+import os
+
+app = FastAPI(title="Music Generator")
+
+# ======================
+# CONFIG
+# ======================
+SUNO_API_URL = os.getenv("SUNO_API_URL", "https://api.sunoapi.org/api/v1/generate")
+SUNO_TOKEN = os.getenv("SUNO_TOKEN", "")
+CALLBACK_URL = "https://musik-android.onrender.com/callback"
+
+HEADERS = {
+    "Authorization": f"Bearer {SUNO_TOKEN}",
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+}
+
+# ======================
+# DB SEDERHANA (AUTO ISI)
+# ======================
+DB = []   # restart server = reset (normal untuk sekarang)
+
+# ======================
+# GENERATE (TEST DULU)
+# ======================
+@app.post("/generate")
+def generate(prompt: str):
+    payload = {
+        "prompt": prompt,
+        "callback_url": CALLBACK_URL
+    }
+
+    r = requests.post(
+        SUNO_API_URL,
+        json=payload,
+        headers=HEADERS,
+        timeout=60
+    )
+
+    resp = r.json()
+
+    return {
+        "status": "sent",
+        "suno_status": r.status_code,
+        "suno_response": resp
+    }
+
+# ======================
+# CALLBACK (AUTO SIMPAN)
+# ======================
+@app.post("/callback")
+async def callback(request: Request):
+    body = await request.body()
+    if not body:
+        return {"ok": True}
+
+    data = await request.json()
+
+    if data.get("status") == "completed":
+        DB.append({
+            "task_id": data.get("id"),
+            "title": data.get("title"),
+            "audio_url": data.get("audio_url"),
+            "image_url": data.get("image_url"),
+        })
+
+    return {"ok": True}
+
+# ======================
+# CEK ISI DB
+# ======================
+@app.get("/db-all")
+def db_all():
+    return DB if DB else []
+
