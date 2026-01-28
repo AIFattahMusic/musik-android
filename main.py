@@ -7,7 +7,7 @@ from typing import Dict, Optional
 # ======================
 # CONFIG
 # ======================
-SUNO_URL_GENERATE = "https://api.sunoapi.org/api/v1/generate"
+API_URL_GENERATE = "https://api.sunoapi.org/api/v1/generate"
 CALLBACK_URL = "https://musik-android.onrender.com/music/callback"
 
 SUNO_TOKEN = os.getenv("SUNO_TOKEN")
@@ -134,4 +134,5 @@ def get_music_status(task_id: str):
         "status": "queued",
         "taskId": task_id,
     }
+
 
