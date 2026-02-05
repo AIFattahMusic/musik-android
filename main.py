@@ -19,7 +19,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 BASE_URL = os.getenv(
     "BASE_URL",
-    "https://ai-music-fattah.onrender.com"
+    "https://musik-android.onrender.com"
 )
 
 CALLBACK_URL = f"{BASE_URL}/callback"
@@ -231,3 +231,4 @@ def db_all():
     cur.close()
     conn.close()
     return rows
+
