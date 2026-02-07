@@ -2,55 +2,49 @@ import os
 import json
 import httpx
 import requests
-import psycopg2
-import firebase_admin
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional
-from datetime import datetime
 
+import firebase_admin
 from firebase_admin import credentials, firestore
 
 # ==================================================
-# WAJIB PALING ATAS: BUAT FOLDER MEDIA
+# BUAT FOLDER MEDIA
 # ==================================================
 os.makedirs("media", exist_ok=True)
 
 # ================= ENV =================
 SUNO_API_KEY = os.getenv("SUNO_API_KEY")
-DATABASE_URL = os.getenv("DATABASE_URL")
 BASE_URL = os.getenv("BASE_URL", "https://musik-android.onrender.com")
-
 CALLBACK_URL = f"{BASE_URL}/callback"
 
+# ================= FIREBASE INIT =================
+if not firebase_admin._apps:
+    cred = credentials.Certificate(
+        json.loads(os.environ["FIREBASE_CRED"])
+    )
+    firebase_admin.initialize_app(cred)
+
+db = firestore.client()
+
+# ================= SUNO API =================
 SUNO_BASE_API = "https://api.kie.ai/api/v1"
 STYLE_GENERATE_URL = f"{SUNO_BASE_API}/style/generate"
 MUSIC_GENERATE_URL = f"{SUNO_BASE_API}/generate"
 STATUS_URL = f"{SUNO_BASE_API}/generate/record-info"
 
-# ================= FIREBASE INIT (RENDER) =================
-firebase_cred_json = os.getenv("FIREBASE_CRED_JSON")
-if not firebase_cred_json:
-    raise Exception("FIREBASE_CRED_JSON belum diset di Render")
-
-cred_dict = json.loads(firebase_cred_json)
-cred = credentials.Certificate(cred_dict)
-
-firebase_admin.initialize_app(cred)
-firebase_db = firestore.client()
-
 # ================= APP =================
 app = FastAPI(
     title="AI Music Suno API Wrapper",
-    version="1.0.4"
+    version="2.0.0-firestore"
 )
 
-# ================= STATIC FILES =================
 app.mount("/media", StaticFiles(directory="media"), name="media")
 
-# ================= REQUEST MODEL =================
+# ================= MODELS =================
 class BoostStyleRequest(BaseModel):
     content: str
 
@@ -63,11 +57,13 @@ class GenerateMusicRequest(BaseModel):
     customMode: bool = False
     model: str = "V4_5"
 
-
 # ================= HELPERS =================
 def suno_headers():
     if not SUNO_API_KEY:
-        raise HTTPException(status_code=500, detail="SUNO_API_KEY not set")
+        raise HTTPException(
+            status_code=500,
+            detail="SUNO_API_KEY not set"
+        )
     return {
         "Authorization": f"Bearer {SUNO_API_KEY}",
         "Content-Type": "application/json"
@@ -79,17 +75,14 @@ def normalize_model(model: str) -> str:
         return "V4_5"
     return model
 
-
 # ================= ENDPOINTS =================
 @app.get("/")
 def root():
-    return {"status": "running", "service": "AI Music Suno API"}
-
+    return {"status": "running"}
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
 
 @app.post("/boost-style")
 async def boost_style(payload: BoostStyleRequest):
@@ -100,7 +93,6 @@ async def boost_style(payload: BoostStyleRequest):
             json={"content": payload.content}
         )
     return res.json()
-
 
 @app.post("/generate-music")
 async def generate_music(payload: GenerateMusicRequest):
@@ -125,10 +117,9 @@ async def generate_music(payload: GenerateMusicRequest):
         )
 
     if res.status_code != 200:
-        raise HTTPException(status_code=500, detail="Gagal generate musik")
+        raise HTTPException(status_code=500, detail=res.text)
 
     return res.json()
-
 
 @app.get("/record-info/{task_id}")
 async def record_info(task_id: str):
@@ -140,13 +131,12 @@ async def record_info(task_id: str):
         )
     return res.json()
 
-
-# ================= CALLBACK (AUTO SAVE FIREBASE + POSTGRES) =================
+# ================= CALLBACK (AUTO SAVE FIRESTORE) =================
 @app.post("/callback")
 async def callback(request: Request):
-    data = await request.json()
-
     try:
+        data = await request.json()
+
         task_id = data.get("taskId") or data.get("task_id")
         items = data.get("data") or []
 
@@ -170,11 +160,11 @@ async def callback(request: Request):
             return {"status": "no_audio"}
 
         title = item.get("title", "Untitled")
-        image_url = item.get("imageUrl")
         lyrics = item.get("lyrics")
+        image_url = item.get("imageUrl")
 
-        # ===== DOWNLOAD AUDIO =====
-        audio_bytes = requests.get(audio_url, timeout=60).content
+        # === DOWNLOAD MP3 ===
+        audio_bytes = requests.get(audio_url).content
         file_path = f"media/{task_id}.mp3"
 
         with open(file_path, "wb") as f:
@@ -182,65 +172,17 @@ async def callback(request: Request):
 
         local_audio_url = f"{BASE_URL}/media/{task_id}.mp3"
 
-        # ================= FIREBASE AUTO SAVE =================
-        firebase_db.collection("songs").document(task_id).set({
+        # === SAVE TO FIRESTORE ===
+        db.collection("songs_api").document(task_id).set({
             "task_id": task_id,
             "title": title,
             "audio_url": local_audio_url,
             "cover_url": image_url,
             "lyrics": lyrics,
-            "status": "done",
-            "source": "suno-kie",
-            "created_at": firestore.SERVER_TIMESTAMP
-        }, merge=True)
+            "status": "done"
+        })
 
-        # ================= POSTGRES SAVE =================
-        conn = psycopg2.connect(DATABASE_URL)
-        cur = conn.cursor()
-
-        cur.execute(
-            """
-            INSERT INTO songs (task_id, title, audio_url, cover_url, lyrics, status)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (task_id) DO NOTHING
-            """,
-            (
-                task_id,
-                title,
-                local_audio_url,
-                image_url,
-                lyrics,
-                "done"
-            )
-        )
-
-        conn.commit()
-        cur.close()
-        conn.close()
-
-        return {"status": "saved", "firebase": True}
+        return {"status": "saved_to_firestore"}
 
     except Exception as e:
         return {"status": "error", "error": str(e)}
-
-
-# ================= DB TEST =================
-def get_conn():
-    return psycopg2.connect(DATABASE_URL)
-
-
-@app.get("/db-all")
-def db_all():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT *
-        FROM information_schema.tables
-        WHERE table_schema = 'public';
-        """
-    )
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
