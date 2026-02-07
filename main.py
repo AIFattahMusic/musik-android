@@ -8,104 +8,81 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional
 
+# ==================================================
+# FIREBASE INIT (WAJIB PALING ATAS)
+# ==================================================
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-# ==================================================
-# BUAT FOLDER MEDIA
-# ==================================================
-os.makedirs("media", exist_ok=True)
+firebase_cred_raw = os.getenv("FIREBASE_CRED")
+if not firebase_cred_raw:
+    raise RuntimeError("FIREBASE_CRED tidak ada di ENV")
 
-# ================= ENV =================
-SUNO_API_KEY = os.getenv("SUNO_API_KEY")
-BASE_URL = os.getenv("BASE_URL", "https://musik-android.onrender.com")
-CALLBACK_URL = f"{BASE_URL}/callback"
+cred_dict = json.loads(firebase_cred_raw)
+cred = credentials.Certificate(cred_dict)
 
-# ================= FIREBASE INIT =================
 if not firebase_admin._apps:
-    cred = credentials.Certificate(
-        json.loads(os.environ["FIREBASE_CRED"])
-    )
     firebase_admin.initialize_app(cred)
 
 db = firestore.client()
+print("🔥 Firebase connected:", cred_dict["project_id"])
 
-# ================= SUNO API =================
+# ==================================================
+# BASIC SETUP
+# ==================================================
+os.makedirs("media", exist_ok=True)
+
+SUNO_API_KEY = os.getenv("SUNO_API_KEY")
+BASE_URL = os.getenv("BASE_URL")
+CALLBACK_URL = f"{BASE_URL}/callback"
+
 SUNO_BASE_API = "https://api.kie.ai/api/v1"
-STYLE_GENERATE_URL = f"{SUNO_BASE_API}/style/generate"
 MUSIC_GENERATE_URL = f"{SUNO_BASE_API}/generate"
 STATUS_URL = f"{SUNO_BASE_API}/generate/record-info"
 
-# ================= APP =================
-app = FastAPI(
-    title="AI Music Suno API Wrapper",
-    version="2.0.0-firestore"
-)
+# ==================================================
+# APP
+# ==================================================
+app = FastAPI(title="AI Music API", version="1.0.0")
 
 app.mount("/media", StaticFiles(directory="media"), name="media")
 
-# ================= MODELS =================
-class BoostStyleRequest(BaseModel):
-    content: str
-
-
+# ==================================================
+# MODELS
+# ==================================================
 class GenerateMusicRequest(BaseModel):
     prompt: str
-    style: Optional[str] = None
     title: Optional[str] = None
     instrumental: bool = False
-    customMode: bool = False
     model: str = "V4_5"
 
-# ================= HELPERS =================
+# ==================================================
+# HELPERS
+# ==================================================
 def suno_headers():
     if not SUNO_API_KEY:
-        raise HTTPException(
-            status_code=500,
-            detail="SUNO_API_KEY not set"
-        )
+        raise HTTPException(500, "SUNO_API_KEY tidak ada")
     return {
         "Authorization": f"Bearer {SUNO_API_KEY}",
         "Content-Type": "application/json"
     }
 
-
-def normalize_model(model: str) -> str:
-    if model.lower() in ["v4", "v4_5", "v45"]:
-        return "V4_5"
-    return model
-
-# ================= ENDPOINTS =================
+# ==================================================
+# ROUTES
+# ==================================================
 @app.get("/")
 def root():
-    return {"status": "running"}
-
-@app.get("/health")
-def health():
     return {"status": "ok"}
-
-@app.post("/boost-style")
-async def boost_style(payload: BoostStyleRequest):
-    async with httpx.AsyncClient(timeout=60) as client:
-        res = await client.post(
-            STYLE_GENERATE_URL,
-            headers=suno_headers(),
-            json={"content": payload.content}
-        )
-    return res.json()
 
 @app.post("/generate-music")
 async def generate_music(payload: GenerateMusicRequest):
     body = {
         "prompt": payload.prompt,
-        "customMode": payload.customMode,
         "instrumental": payload.instrumental,
-        "model": normalize_model(payload.model),
+        "model": payload.model,
         "callBackUrl": CALLBACK_URL
     }
 
-    if payload.style:
-        body["style"] = payload.style
     if payload.title:
         body["title"] = payload.title
 
@@ -117,7 +94,7 @@ async def generate_music(payload: GenerateMusicRequest):
         )
 
     if res.status_code != 200:
-        raise HTTPException(status_code=500, detail=res.text)
+        raise HTTPException(500, res.text)
 
     return res.json()
 
@@ -131,58 +108,52 @@ async def record_info(task_id: str):
         )
     return res.json()
 
-# ================= CALLBACK (AUTO SAVE FIRESTORE) =================
+# ==================================================
+# CALLBACK — INI YANG NYIMPEN KE FIRESTORE
+# ==================================================
 @app.post("/callback")
 async def callback(request: Request):
-    try:
-        data = await request.json()
+    data = await request.json()
 
-        task_id = data.get("taskId") or data.get("task_id")
-        items = data.get("data") or []
+    task_id = data.get("taskId")
+    items = data.get("data", [])
 
-        if not items:
-            return {"status": "ignored"}
+    if not task_id or not items:
+        return {"status": "ignored"}
 
-        item = items[0]
-        state = item.get("state") or item.get("status")
+    item = items[0]
 
-        if state != "succeeded":
-            return {"status": "processing"}
+    if item.get("state") != "succeeded":
+        return {"status": "processing"}
 
-        audio_url = (
-            item.get("audio_url")
-            or item.get("audioUrl")
-            or item.get("audio")
-            or item.get("streamAudioUrl")
-        )
+    audio_url = item.get("streamAudioUrl")
+    image_url = item.get("imageUrl")
+    lyrics = item.get("lyrics")
+    title = item.get("title", "Untitled")
 
-        if not audio_url:
-            return {"status": "no_audio"}
+    if not audio_url:
+        return {"status": "no_audio"}
 
-        title = item.get("title", "Untitled")
-        lyrics = item.get("lyrics")
-        image_url = item.get("imageUrl")
+    # ================= SAVE MP3 =================
+    audio_bytes = requests.get(audio_url).content
+    file_path = f"media/{task_id}.mp3"
 
-        # === DOWNLOAD MP3 ===
-        audio_bytes = requests.get(audio_url).content
-        file_path = f"media/{task_id}.mp3"
+    with open(file_path, "wb") as f:
+        f.write(audio_bytes)
 
-        with open(file_path, "wb") as f:
-            f.write(audio_bytes)
+    local_audio_url = f"{BASE_URL}/media/{task_id}.mp3"
 
-        local_audio_url = f"{BASE_URL}/media/{task_id}.mp3"
+    # ================= SAVE FIRESTORE =================
+    db.collection("songs_api").document(task_id).set({
+        "task_id": task_id,
+        "title": title,
+        "audio_url": local_audio_url,
+        "cover_url": image_url,
+        "lyrics": lyrics,
+        "status": "done",
+        "created_at": firestore.SERVER_TIMESTAMP
+    })
 
-        # === SAVE TO FIRESTORE ===
-        db.collection("songs_api").document(task_id).set({
-            "task_id": task_id,
-            "title": title,
-            "audio_url": local_audio_url,
-            "cover_url": image_url,
-            "lyrics": lyrics,
-            "status": "done"
-        })
+    print("✅ Saved to Firestore:", task_id)
 
-        return {"status": "saved_to_firestore"}
-
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
+    return {"status": "saved"}
