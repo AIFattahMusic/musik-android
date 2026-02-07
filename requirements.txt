@@ -4,5 +4,6 @@ requests
 python-dotenv
 psycopg2-binary
 httpx
-firebase_admin
+firebase-admin
+
 
