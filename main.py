@@ -1,23 +1,34 @@
 import os
-import json
 import httpx
 import requests
 import psycopg2
+import json
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional
 
+# ===== TAMBAHAN FIREBASE =====
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+firebase_db = None
+FIREBASE_CRED_JSON = os.getenv("FIREBASE_CRED_JSON")
+if FIREBASE_CRED_JSON:
+    cred = credentials.Certificate(json.loads(FIREBASE_CRED_JSON))
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app(cred)
+    firebase_db = firestore.client()
+# ===== END FIREBASE =====
+
 # ==================================================
-# BUAT FOLDER MEDIA
+# WAJIB PALING ATAS: BUAT FOLDER MEDIA
 # ==================================================
 os.makedirs("media", exist_ok=True)
 
 # ================= ENV =================
 SUNO_API_KEY = os.getenv("SUNO_API_KEY")
-DATABASE_URL = os.getenv("DATABASE_URL")
-FIREBASE_CRED_JSON = os.getenv("FIREBASE_CRED_JSON")
 
 BASE_URL = os.getenv(
     "BASE_URL",
@@ -31,30 +42,18 @@ STYLE_GENERATE_URL = f"{SUNO_BASE_API}/style/generate"
 MUSIC_GENERATE_URL = f"{SUNO_BASE_API}/generate"
 STATUS_URL = f"{SUNO_BASE_API}/generate/record-info"
 
-# ================= FIREBASE INIT =================
-firebase_db = None
-if FIREBASE_CRED_JSON:
-    import firebase_admin
-    from firebase_admin import credentials, firestore
-
-    cred_dict = json.loads(FIREBASE_CRED_JSON)
-    cred = credentials.Certificate(cred_dict)
-
-    if not firebase_admin._apps:
-        firebase_admin.initialize_app(cred)
-
-    firebase_db = firestore.client()
-
 # ================= APP =================
 app = FastAPI(
     title="AI Music Suno API Wrapper",
     version="1.0.3"
 )
 
-# ================= STATIC =================
+# ==================================================
+# STATIC FILES
+# ==================================================
 app.mount("/media", StaticFiles(directory="media"), name="media")
 
-# ================= MODELS =================
+# ================= REQUEST MODEL =================
 class BoostStyleRequest(BaseModel):
     content: str
 
@@ -71,7 +70,10 @@ class GenerateMusicRequest(BaseModel):
 # ================= HELPERS =================
 def suno_headers():
     if not SUNO_API_KEY:
-        raise HTTPException(status_code=500, detail="SUNO_API_KEY tidak ada")
+        raise HTTPException(
+            status_code=500,
+            detail="SUNO_API_KEY not set in environment"
+        )
     return {
         "Authorization": f"Bearer {SUNO_API_KEY}",
         "Content-Type": "application/json"
@@ -84,10 +86,10 @@ def normalize_model(model: str) -> str:
     return model
 
 
-# ================= ROUTES =================
+# ================= ENDPOINTS =================
 @app.get("/")
 def root():
-    return {"status": "running"}
+    return {"status": "running", "service": "AI Music Suno API"}
 
 
 @app.get("/health")
@@ -110,8 +112,8 @@ async def boost_style(payload: BoostStyleRequest):
 async def generate_music(payload: GenerateMusicRequest):
     body = {
         "prompt": payload.prompt,
-        "customMode": bool(payload.customMode),
-        "instrumental": bool(payload.instrumental),
+        "customMode": payload.customMode,
+        "instrumental": payload.instrumental,
         "model": normalize_model(payload.model),
         "callBackUrl": CALLBACK_URL
     }
@@ -164,6 +166,7 @@ async def callback(request: Request):
     audio_url = (
         item.get("audio_url")
         or item.get("audioUrl")
+        or item.get("audio")
         or item.get("streamAudioUrl")
     )
 
@@ -171,35 +174,33 @@ async def callback(request: Request):
         return {"status": "no_audio"}
 
     title = item.get("title", "Untitled")
-    lyrics = item.get("lyrics")
     image_url = item.get("imageUrl")
+    lyrics = item.get("lyrics")
 
-    # === SAVE MP3 ===
+    # SAVE MP3
     audio_bytes = requests.get(audio_url).content
     file_path = f"media/{task_id}.mp3"
-
     with open(file_path, "wb") as f:
         f.write(audio_bytes)
 
     local_audio_url = f"{BASE_URL}/media/{task_id}.mp3"
 
-    # === POSTGRES (OPTIONAL) ===
-    if DATABASE_URL:
-        conn = psycopg2.connect(DATABASE_URL)
-        cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO songs (task_id, title, audio_url, cover_url, lyrics, status)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (task_id) DO NOTHING
-            """,
-            (task_id, title, local_audio_url, image_url, lyrics, "done")
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
+    # POSTGRES (TETAP)
+    conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO songs (task_id, title, audio_url, cover_url, lyrics, status)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (task_id) DO NOTHING
+        """,
+        (task_id, title, local_audio_url, image_url, lyrics, "done")
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
 
-    # === FIREBASE ===
+    # FIREBASE (TAMBAHAN)
     if firebase_db:
         firebase_db.collection("songs_api").document(task_id).set({
             "task_id": task_id,
@@ -211,3 +212,25 @@ async def callback(request: Request):
         })
 
     return {"status": "saved"}
+
+
+# ================= DB TEST =================
+def get_conn():
+    return psycopg2.connect(os.environ["DATABASE_URL"])
+
+
+@app.get("/db-all")
+def db_all():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT *
+        FROM information_schema.tables
+        WHERE table_schema = 'public';
+        """
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
