@@ -1,12 +1,17 @@
 import os
+import json
 import httpx
 import requests
 import psycopg2
+import firebase_admin
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional
+from datetime import datetime
+
+from firebase_admin import credentials, firestore
 
 # ==================================================
 # WAJIB PALING ATAS: BUAT FOLDER MEDIA
@@ -15,11 +20,8 @@ os.makedirs("media", exist_ok=True)
 
 # ================= ENV =================
 SUNO_API_KEY = os.getenv("SUNO_API_KEY")
-
-BASE_URL = os.getenv(
-    "BASE_URL",
-    "https://musik-android.onrender.com"
-)
+DATABASE_URL = os.getenv("DATABASE_URL")
+BASE_URL = os.getenv("BASE_URL", "https://musik-android.onrender.com")
 
 CALLBACK_URL = f"{BASE_URL}/callback"
 
@@ -28,15 +30,24 @@ STYLE_GENERATE_URL = f"{SUNO_BASE_API}/style/generate"
 MUSIC_GENERATE_URL = f"{SUNO_BASE_API}/generate"
 STATUS_URL = f"{SUNO_BASE_API}/generate/record-info"
 
+# ================= FIREBASE INIT (RENDER) =================
+firebase_cred_json = os.getenv("FIREBASE_CRED_JSON")
+if not firebase_cred_json:
+    raise Exception("FIREBASE_CRED_JSON belum diset di Render")
+
+cred_dict = json.loads(firebase_cred_json)
+cred = credentials.Certificate(cred_dict)
+
+firebase_admin.initialize_app(cred)
+firebase_db = firestore.client()
+
 # ================= APP =================
 app = FastAPI(
     title="AI Music Suno API Wrapper",
-    version="1.0.3"
+    version="1.0.4"
 )
 
-# ==================================================
-# STATIC FILES
-# ==================================================
+# ================= STATIC FILES =================
 app.mount("/media", StaticFiles(directory="media"), name="media")
 
 # ================= REQUEST MODEL =================
@@ -56,10 +67,7 @@ class GenerateMusicRequest(BaseModel):
 # ================= HELPERS =================
 def suno_headers():
     if not SUNO_API_KEY:
-        raise HTTPException(
-            status_code=500,
-            detail="SUNO_API_KEY not set in environment"
-        )
+        raise HTTPException(status_code=500, detail="SUNO_API_KEY not set")
     return {
         "Authorization": f"Bearer {SUNO_API_KEY}",
         "Content-Type": "application/json"
@@ -117,7 +125,6 @@ async def generate_music(payload: GenerateMusicRequest):
         )
 
     if res.status_code != 200:
-        print("SUNO GENERATE ERROR:", res.text)
         raise HTTPException(status_code=500, detail="Gagal generate musik")
 
     return res.json()
@@ -134,6 +141,7 @@ async def record_info(task_id: str):
     return res.json()
 
 
+# ================= CALLBACK (AUTO SAVE FIREBASE + POSTGRES) =================
 @app.post("/callback")
 async def callback(request: Request):
     data = await request.json()
@@ -158,15 +166,15 @@ async def callback(request: Request):
             or item.get("streamAudioUrl")
         )
 
-        image_url = item.get("imageUrl")
-        lyrics = item.get("lyrics")
-        title = item.get("title", "Untitled")
-
         if not audio_url:
             return {"status": "no_audio"}
 
-        # === SAVE MP3 ===
-        audio_bytes = requests.get(audio_url).content
+        title = item.get("title", "Untitled")
+        image_url = item.get("imageUrl")
+        lyrics = item.get("lyrics")
+
+        # ===== DOWNLOAD AUDIO =====
+        audio_bytes = requests.get(audio_url, timeout=60).content
         file_path = f"media/{task_id}.mp3"
 
         with open(file_path, "wb") as f:
@@ -174,8 +182,20 @@ async def callback(request: Request):
 
         local_audio_url = f"{BASE_URL}/media/{task_id}.mp3"
 
-        # === INSERT DB ===
-        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+        # ================= FIREBASE AUTO SAVE =================
+        firebase_db.collection("songs").document(task_id).set({
+            "task_id": task_id,
+            "title": title,
+            "audio_url": local_audio_url,
+            "cover_url": image_url,
+            "lyrics": lyrics,
+            "status": "done",
+            "source": "suno-kie",
+            "created_at": firestore.SERVER_TIMESTAMP
+        }, merge=True)
+
+        # ================= POSTGRES SAVE =================
+        conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
 
         cur.execute(
@@ -198,7 +218,7 @@ async def callback(request: Request):
         cur.close()
         conn.close()
 
-        return {"status": "saved"}
+        return {"status": "saved", "firebase": True}
 
     except Exception as e:
         return {"status": "error", "error": str(e)}
@@ -206,7 +226,7 @@ async def callback(request: Request):
 
 # ================= DB TEST =================
 def get_conn():
-    return psycopg2.connect(os.environ["DATABASE_URL"])
+    return psycopg2.connect(DATABASE_URL)
 
 
 @app.get("/db-all")
