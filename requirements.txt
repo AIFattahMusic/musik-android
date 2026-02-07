@@ -4,4 +4,5 @@ requests
 python-dotenv
 psycopg2-binary
 httpx
-import firebase_admin
+firebase_admin
+
