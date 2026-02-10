@@ -41,11 +41,14 @@ SUNO_BASE_API = "https://api.kie.ai/api/v1"
 STYLE_GENERATE_URL = f"{SUNO_BASE_API}/style/generate"
 MUSIC_GENERATE_URL = f"{SUNO_BASE_API}/generate"
 STATUS_URL = f"{SUNO_BASE_API}/generate/record-info"
+# Endpoint Baru
+LYRICS_URL = f"{SUNO_BASE_API}/generate/get-timestamped-lyrics"
+VIDEO_URL = f"{SUNO_BASE_API}/mp4/generate"
 
 # ================= APP =================
 app = FastAPI(
     title="AI Music Suno API Wrapper",
-    version="1.0.3"
+    version="1.0.4"
 )
 
 # ==================================================
@@ -65,6 +68,16 @@ class GenerateMusicRequest(BaseModel):
     instrumental: bool = False
     customMode: bool = False
     model: str = "V4_5"
+
+# Model Baru untuk Lirik dan Video
+class LyricRequest(BaseModel):
+    taskId: str
+    audioId: str
+
+class VideoRequest(BaseModel):
+    taskId: str
+    audioId: str
+    author: Optional[str] = "DJ Fattah"
 
 
 # ================= HELPERS =================
@@ -146,6 +159,33 @@ async def record_info(task_id: str):
         )
     return res.json()
 
+# --- ENDPOINT BARU UNTUK LIRIK ---
+@app.post("/get-timestamped-lyrics")
+async def get_lyrics(payload: LyricRequest):
+    async with httpx.AsyncClient(timeout=60) as client:
+        res = await client.post(
+            LYRICS_URL,
+            headers=suno_headers(),
+            json=payload.dict()
+        )
+    return res.json()
+
+# --- ENDPOINT BARU UNTUK VIDEO ---
+@app.post("/generate-video")
+async def generate_video(payload: VideoRequest):
+    body = payload.dict()
+    body.update({
+        "callBackUrl": CALLBACK_URL,
+        "domainName": BASE_URL.replace("https://", "").replace("http://", "")
+    })
+    async with httpx.AsyncClient(timeout=60) as client:
+        res = await client.post(
+            VIDEO_URL,
+            headers=suno_headers(),
+            json=body
+        )
+    return res.json()
+
 
 @app.post("/callback")
 async def callback(request: Request):
@@ -178,38 +218,46 @@ async def callback(request: Request):
     lyrics = item.get("lyrics")
 
     # SAVE MP3
-    audio_bytes = requests.get(audio_url).content
-    file_path = f"media/{task_id}.mp3"
-    with open(file_path, "wb") as f:
-        f.write(audio_bytes)
-
-    local_audio_url = f"{BASE_URL}/media/{task_id}.mp3"
+    try:
+        audio_bytes = requests.get(audio_url).content
+        file_path = f"media/{task_id}.mp3"
+        with open(file_path, "wb") as f:
+            f.write(audio_bytes)
+        local_audio_url = f"{BASE_URL}/media/{task_id}.mp3"
+    except:
+        local_audio_url = audio_url
 
     # POSTGRES (TETAP)
-    conn = psycopg2.connect(os.environ["DATABASE_URL"])
-    cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO songs (task_id, title, audio_url, cover_url, lyrics, status)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (task_id) DO NOTHING
-        """,
-        (task_id, title, local_audio_url, image_url, lyrics, "done")
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO songs (task_id, title, audio_url, cover_url, lyrics, status)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (task_id) DO NOTHING
+            """,
+            (task_id, title, local_audio_url, image_url, lyrics, "done")
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"Postgres Error: {e}")
 
     # FIREBASE (TAMBAHAN)
     if firebase_db:
-        firebase_db.collection("songs_api").document(task_id).set({
-            "task_id": task_id,
-            "title": title,
-            "audio_url": local_audio_url,
-            "cover_url": image_url,
-            "lyrics": lyrics,
-            "status": "done"
-        })
+        try:
+            firebase_db.collection("songs_api").document(task_id).set({
+                "task_id": task_id,
+                "title": title,
+                "audio_url": local_audio_url,
+                "cover_url": image_url,
+                "lyrics": lyrics,
+                "status": "done"
+            })
+        except Exception as e:
+            print(f"Firebase Error: {e}")
 
     return {"status": "saved"}
 
