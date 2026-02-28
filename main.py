@@ -141,22 +141,21 @@ def generate_status(task_id: str):
         return {"status": "processing", "result": res}
 
     state = item.get("state") or item.get("status")
-    audio_url = (
-        item.get("audio_url")
-        or item.get("audioUrl")
-        or item.get("audio")
-    )
+
+    # ================== TIDAK PAKAI TEMP ==================
+    audio_url = item.get("streamAudioUrl")
+    # ======================================================
 
     if state == "succeeded" and audio_url:
         audio_bytes = requests.get(audio_url).content
 
-        file_path = "media/song_1.mp3"
+        file_path = f"media/{task_id}.mp3"
         with open(file_path, "wb") as f:
             f.write(audio_bytes)
 
         return {
             "status": "done",
-            "audio_url": f"{BASE_URL}/media/song_1.mp3",
+            "audio_url": f"{BASE_URL}/media/{task_id}.mp3",
             "result": item
         }
 
