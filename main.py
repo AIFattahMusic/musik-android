@@ -6,7 +6,39 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional
 import logging
+from supabase import create_client
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+def simpan_hasil_lagu(task_id, title, prompt, audio_url, cover_url, lyrics, duration):
+
+    # download audio
+    audio_file = requests.get(audio_url).content
+    supabase.storage.from_("audio").upload(
+        f"{task_id}.mp3",
+        audio_file
+    )
+
+    # download cover
+    cover_file = requests.get(cover_url).content
+    supabase.storage.from_("covers").upload(
+        f"{task_id}.jpg",
+        cover_file
+    )
+
+    # simpan metadata ke database
+    supabase.table("songs").insert({
+        "task_id": task_id,
+        "title": title,
+        "prompt": prompt,
+        "status": "completed",
+        "audio_path": f"audio/{task_id}.mp3",
+        "cover_path": f"covers/{task_id}.jpg",
+        "lyrics": lyrics,
+        "duration": duration
+    }).execute()
 # Konfigurasi logging untuk melihat output di log server
 logging.basicConfig(level=logging.INFO)
 
@@ -214,3 +246,4 @@ async def callback(request: Request):
     except Exception as e:
         logging.error(f"Error pada callback: {e}")
         return {"ok": False}
+
