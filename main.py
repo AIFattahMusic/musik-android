@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 # ==================================================
-# BUAT FOLDER MEDIA
+# FOLDER MEDIA
 # ==================================================
 os.makedirs("media", exist_ok=True)
 
@@ -30,12 +30,12 @@ STATUS_URL = f"{SUNO_BASE_API}/generate/record-info"
 # ================= APP =================
 app = FastAPI(
     title="AI Music Suno API Wrapper",
-    version="2.0.0"
+    version="3.0.0"
 )
 
 app.mount("/media", StaticFiles(directory="media"), name="media")
 
-# ================= REQUEST MODEL =================
+# ================= MODEL =================
 class BoostStyleRequest(BaseModel):
     content: str
 
@@ -50,10 +50,7 @@ class GenerateMusicRequest(BaseModel):
 # ================= HELPERS =================
 def suno_headers():
     if not SUNO_API_KEY:
-        raise HTTPException(
-            status_code=500,
-            detail="SUNO_API_KEY not set"
-        )
+        raise HTTPException(status_code=500, detail="SUNO_API_KEY not set")
     return {
         "Authorization": f"Bearer {SUNO_API_KEY}",
         "Content-Type": "application/json"
@@ -67,6 +64,17 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+# ================= BOOST =================
+@app.post("/boost-style")
+async def boost_style(payload: BoostStyleRequest):
+    async with httpx.AsyncClient(timeout=60) as client:
+        res = await client.post(
+            STYLE_GENERATE_URL,
+            headers=suno_headers(),
+            json={"content": payload.content}
+        )
+    return res.json()
 
 # ================= GENERATE =================
 @app.post("/generate-music")
@@ -93,10 +101,8 @@ async def generate_music(payload: GenerateMusicRequest):
 
     return res.json()
 
-# ================= STATUS (NO TEMP) =================
-@app.get("/generate/status/{task_id}")
-def generate_status(task_id: str):
-
+# ================= STATUS (NO TEMP EVER) =================
+def process_task(task_id: str):
     r = requests.get(
         STATUS_URL,
         headers=suno_headers(),
@@ -104,7 +110,7 @@ def generate_status(task_id: str):
     )
 
     if r.status_code != 200:
-        raise HTTPException(status_code=404, detail=r.text)
+        raise HTTPException(status_code=404, detail="Task not found")
 
     res = r.json()
 
@@ -120,26 +126,34 @@ def generate_status(task_id: str):
     if state != "succeeded":
         return {"status": "processing"}
 
-    # ==================== ONLY STREAM ====================
+    # HANYA STREAM URL
     stream_url = item.get("streamAudioUrl")
 
     if not stream_url:
         return {"status": "processing"}
 
-    # ================= DOWNLOAD ==========================
     file_path = f"media/{task_id}.mp3"
 
-    # kalau file sudah ada, tidak download ulang
+    # kalau belum ada, download
     if not os.path.exists(file_path):
         audio_bytes = requests.get(stream_url).content
         with open(file_path, "wb") as f:
             f.write(audio_bytes)
 
-    # ================= RETURN ONLY YOUR URL ==============
     return {
         "status": "done",
         "audio_url": f"{BASE_URL}/media/{task_id}.mp3"
     }
+
+# Endpoint utama
+@app.get("/generate/status/{task_id}")
+def generate_status(task_id: str):
+    return process_task(task_id)
+
+# record-info tetap ada tapi tidak expose temp
+@app.get("/record-info/{task_id}")
+def record_info(task_id: str):
+    return process_task(task_id)
 
 # ================= CALLBACK =================
 @app.post("/callback")
