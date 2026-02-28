@@ -34,7 +34,6 @@ CALLBACK_URL = f"{BASE_URL}/callback"
 
 # Endpoint dari API eksternal (Suno via proxy Kie.ai)
 SUNO_BASE_API = "https://api.kie.ai/api/v1"
-STYLE_GENERATE_URL = f"{SUNO_BASE_API}/style/generate"
 MUSIC_GENERATE_URL = f"{SUNO_BASE_API}/generate"
 STATUS_URL = f"{SUNO_BASE_API}/generate/record-info"
 
@@ -43,8 +42,8 @@ STATUS_URL = f"{SUNO_BASE_API}/generate/record-info"
 # ==================================================
 app = FastAPI(
     title="AI Music Suno API Wrapper",
-    version="3.0.0",
-    description="Server proxy untuk menjembatani aplikasi Android dengan Suno API."
+    version="4.0.0",
+    description="Server proxy untuk menjembatani aplikasi Android dengan Suno API, mengirimkan data lengkap."
 )
 
 # Membuat endpoint statis agar file di folder 'media' bisa diakses dari web
@@ -55,9 +54,6 @@ app.mount("/media", StaticFiles(directory="media"), name="media")
 # MODEL DATA (PYDANTIC)
 # Mendefinisikan struktur data untuk request dari aplikasi Android
 # ==================================================
-class BoostStyleRequest(BaseModel):
-    content: str
-
 class GenerateMusicRequest(BaseModel):
     prompt: str
     style: Optional[str] = None
@@ -85,7 +81,7 @@ def suno_headers():
 @app.get("/")
 def root():
     """Endpoint utama untuk memeriksa apakah server berjalan."""
-    return {"status": "running", "version": "3.0.0"}
+    return {"status": "running", "version": "4.0.0"}
 
 @app.get("/health")
 def health():
@@ -108,7 +104,7 @@ async def generate_music(payload: GenerateMusicRequest):
         "customMode": payload.customMode,
         "instrumental": payload.instrumental,
         "model": payload.model,
-        "callBackUrl": CALLBACK_URL  # Memberitahu Suno ke mana harus mengirim notifikasi
+        "callBackUrl": CALLBACK_URL
     }
 
     if payload.style:
@@ -123,7 +119,7 @@ async def generate_music(payload: GenerateMusicRequest):
                 headers=suno_headers(),
                 json=body
             )
-            res.raise_for_status()  # Error jika status code bukan 2xx
+            res.raise_for_status()
             logging.info("Request ke Suno API berhasil dikirim.")
             return res.json()
         except httpx.HTTPStatusError as e:
@@ -133,17 +129,13 @@ async def generate_music(payload: GenerateMusicRequest):
             logging.error(f"Terjadi error tidak terduga: {e}")
             raise HTTPException(status_code=500, detail="Terjadi error internal pada server.")
 
-
 # ==================================================
 # ENDPOINT POLLING (PENGAMBILAN LAGU)
-# Inilah yang dipanggil berulang-ulang oleh aplikasi untuk cek status
 # ==================================================
 @app.get("/generate/status/{task_id}")
 def generate_status(task_id: str):
     """
-    Endpoint yang dipanggil aplikasi untuk memeriksa status pembuatan lagu.
-    Jika sudah selesai, endpoint ini akan men-download lagu dari URL sementara
-    dan menyediakannya melalui URL permanen di server ini.
+    Endpoint yang dipanggil aplikasi untuk memeriksa status dan mengambil data lengkap.
     """
     logging.info(f"Mengecek status untuk task_id: {task_id}")
     
@@ -162,7 +154,6 @@ def generate_status(task_id: str):
     res = r.json()
     item = res.get("data")
 
-    # Jika data adalah list, ambil item pertama
     if isinstance(item, list) and len(item) > 0:
         item = item[0]
 
@@ -172,25 +163,21 @@ def generate_status(task_id: str):
 
     state = item.get("state") or item.get("status")
 
-    # Selama statusnya belum 'succeeded', kembalikan 'processing'
     if state != "succeeded":
         logging.info(f"Task {task_id} masih dalam status: {state}")
         return {"status": "processing", "detail": f"Status saat ini: {state}"}
 
-    # Jika sudah 'succeeded', ambil URL streaming sementara
     stream_url = item.get("streamAudioUrl")
     if not stream_url:
         logging.error(f"Task {task_id} berhasil tapi tidak ada streamAudioUrl.")
         return {"status": "processing", "detail": "Lagu selesai tapi URL tidak ditemukan, mencoba lagi..."}
 
-    # Path untuk menyimpan file mp3 di server
     file_path = f"media/{task_id}.mp3"
     public_audio_url = f"{BASE_URL}/{file_path}"
 
-    # Jika file belum ada di server, download dari URL sementara
     if not os.path.exists(file_path):
         try:
-            logging.info(f"Mendownload lagu untuk task {task_id} dari {stream_url}")
+            logging.info(f"Mendownload lagu untuk task {task_id}...")
             audio_bytes = requests.get(stream_url, timeout=60).content
             with open(file_path, "wb") as f:
                 f.write(audio_bytes)
@@ -199,10 +186,19 @@ def generate_status(task_id: str):
             logging.error(f"Gagal mendownload audio dari stream URL untuk task {task_id}: {e}")
             raise HTTPException(status_code=500, detail="Gagal mendownload file audio dari Suno.")
 
-    # Kembalikan status "done" dengan URL publik yang bisa diakses aplikasi
+    # ============================================================
+    # ==== PERUBAHAN UTAMA ADA DI SINI ====
+    # ============================================================
+    # Mengirimkan kembali semua data yang relevan ke aplikasi Android
+    logging.info(f"Task {task_id} selesai. Mengirim data lengkap ke aplikasi.")
     return {
         "status": "done",
-        "audio_url": public_audio_url
+        "audio_url": public_audio_url,
+        "image_url": item.get("image_url"),
+        "duration": item.get("duration"),
+        "title": item.get("title"),
+        "prompt": item.get("prompt"), # Ini berisi lirik
+        "style": item.get("metadata", {}).get("tags") # Ini berisi genre/style
     }
 
 # ==================================================
@@ -210,8 +206,7 @@ def generate_status(task_id: str):
 # ==================================================
 @app.post("/callback")
 async def callback(request: Request):
-    """Endpoint ini dipanggil oleh Suno API saat ada update status.
-    Untuk saat ini, kita hanya mencatat datanya."""
+    """Endpoint ini dipanggil oleh Suno API saat ada update status."""
     try:
         data = await request.json()
         logging.info(f"CALLBACK DITERIMA: {data}")
