@@ -30,11 +30,11 @@
 ‎# ================= APP =================
 ‎app = FastAPI(
 ‎    title="AI Music Suno API Wrapper",
-‎    version="1.0.3"
+‎    version="1.0.2"
 ‎)
 ‎
 ‎# ==================================================
-‎# STATIC FILES
+‎# STATIC FILES (SETELAH app dibuat)
 ‎# ==================================================
 ‎app.mount("/media", StaticFiles(directory="media"), name="media")
 ‎
@@ -62,11 +62,6 @@
 ‎        "Content-Type": "application/json"
 ‎    }
 ‎
-‎def normalize_model(model: str) -> str:
-‎    if model.lower() in ["v4", "v4_5", "v45"]:
-‎        return "V4_5"
-‎    return model
-‎
 ‎# ================= ENDPOINTS =================
 ‎@app.get("/")
 ‎def root():
@@ -92,7 +87,7 @@
 ‎        "prompt": payload.prompt,
 ‎        "customMode": payload.customMode,
 ‎        "instrumental": payload.instrumental,
-‎        "model": normalize_model(payload.model),
+‎        "model": payload.model,
 ‎        "callBackUrl": CALLBACK_URL
 ‎    }
 ‎
@@ -107,11 +102,6 @@
 ‎            headers=suno_headers(),
 ‎            json=body
 ‎        )
-‎
-‎    if res.status_code != 200:
-‎        print("SUNO GENERATE ERROR:", res.text)
-‎        raise HTTPException(status_code=500, detail="Gagal generate musik")
-‎
 ‎    return res.json()
 ‎
 ‎@app.get("/record-info/{task_id}")
@@ -124,12 +114,53 @@
 ‎        )
 ‎    return res.json()
 ‎
-
+‎@app.post("/callback")
+‎async def callback(request: Request):
+‎    data = await request.json()
+‎    print("SUNO CALLBACK:", data)
+‎    return {"status": "received"}
 ‎
-‎        return {"status": "saved"}
+‎@app.get("/generate/status/{task_id}")
+‎def generate_status(task_id: str):
+‎    r = requests.get(
+‎        STATUS_URL,
+‎        headers=suno_headers(),
+‎        params={"taskId": task_id}
+‎    )
 ‎
-‎    except Exception as e:
-‎        return {"status": "error", "error": str(e)}
+‎    if r.status_code != 200:
+‎        raise HTTPException(status_code=404, detail=r.text)
+‎
+‎    res = r.json()
+‎
+‎    item = None
+‎    if isinstance(res.get("data"), list) and len(res["data"]) > 0:
+‎        item = res["data"][0]
+‎
+‎    if not item:
+‎        return {"status": "processing", "result": res}
+‎
+‎    state = item.get("state") or item.get("status")
+‎    audio_url = (
+‎        item.get("audio_url")
+‎        or item.get("audioUrl")
+‎        or item.get("audio")
+‎    )
+‎
+‎    if state == "succeeded" and audio_url:
+‎        audio_bytes = requests.get(audio_url).content
+‎
+‎        file_path = "media/song_1.mp3"
+‎        with open(file_path, "wb") as f:
+‎            f.write(audio_bytes)
+‎
+‎        return {
+‎            "status": "done",
+‎            "audio_url": f"{BASE_URL}/media/song_1.mp3",
+‎            "result": item
+‎        }
+‎
+‎    return {"status": "processing", "result": item}
 ‎
 ‎# ================= DB TEST =================
 ‎def get_conn():
@@ -149,5 +180,3 @@
 ‎    conn.close()
 ‎    return rows
 ‎
-‎
-
