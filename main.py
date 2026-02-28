@@ -1,213 +1,212 @@
-import os
-import httpx
-import requests
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
-from typing import Optional
-import logging
-from supabase import create_client
+import requests
+import os
+import json
+import re
+from dotenv import load_dotenv
 
-# ==================================================
-# SUPABASE CONFIG
-# ==================================================
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+load_dotenv()
 
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise Exception("SUPABASE ENV belum di-set!")
+app = FastAPI(title="Suno Generator + Callback Render")
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+SUNO_API_URL = os.getenv("SUNO_API_URL", "https://api.sunoapi.org/api/v1/generate")
+SUNO_TOKEN = os.getenv("SUNO_TOKEN")
 
-# ==================================================
-# SUNO CONFIG
-# ==================================================
-SUNO_API_KEY = os.getenv("SUNO_API_KEY")
+# Callback kamu (Render)
+CALLBACK_URL = "https://ai-music-fattah.onrender.com/callback"
 
-BASE_URL = os.getenv(
-    "BASE_URL",
-    "https://musik-android.onrender.com"
-)
+if not SUNO_TOKEN:
+    raise Exception("SUNO_TOKEN belum diisi. Isi di file .env: SUNO_TOKEN=token_kamu")
 
-CALLBACK_URL = f"{BASE_URL}/callback"
+# Simpan hasil callback di memory
+RESULTS = {}  # key: taskId / id / "latest"
 
-SUNO_BASE_API = "https://api.kie.ai/api/v1"
-MUSIC_GENERATE_URL = f"{SUNO_BASE_API}/generate"
-STATUS_URL = f"{SUNO_BASE_API}/generate/record-info"
 
-# ==================================================
-# APP INIT
-# ==================================================
-app = FastAPI(
-    title="AI Music Suno API Wrapper",
-    version="5.0.0"
-)
-
-logging.basicConfig(level=logging.INFO)
-
-# ==================================================
-# MODEL
-# ==================================================
-class GenerateMusicRequest(BaseModel):
+# =========================
+# Request body
+# =========================
+class GenerateRequest(BaseModel):
     prompt: str
-    style: Optional[str] = None
-    title: Optional[str] = None
-    instrumental: bool = False
+    style: str = "Classical"
+    title: str = "False"
     customMode: bool = False
-    model: str = "V4_5"
+    instrumental: bool = False
+    model: str = "V3_5"
+    negativeTags: str = "False"
 
-# ==================================================
-# HELPERS
-# ==================================================
-def suno_headers():
-    if not SUNO_API_KEY:
-        raise HTTPException(status_code=500, detail="SUNO_API_KEY belum diatur!")
-    return {
-        "Authorization": f"Bearer {SUNO_API_KEY}",
-        "Content-Type": "application/json"
-    }
 
-def simpan_hasil_lagu(task_id, title, prompt, audio_url, cover_url, lyrics, duration):
+# =========================
+# Helpers
+# =========================
+def extract_urls(text: str):
+    if not isinstance(text, str):
+        return []
+    return re.findall(r"https?://[^\s\"\'\)\]]+", text)
 
-    # download audio
-    audio_file = requests.get(audio_url, timeout=60).content
-    supabase.storage.from_("audio").upload(
-        f"{task_id}.mp3",
-        audio_file,
-        {"content-type": "audio/mpeg"}
+
+def find_audio_urls(obj):
+    found = []
+
+    def walk(x):
+        if isinstance(x, dict):
+            for k, v in x.items():
+                key = str(k).lower()
+
+                if isinstance(v, str):
+                    if v.startswith("http"):
+                        if (
+                            "audio" in key
+                            or "url" in key
+                            or "link" in key
+                            or v.lower().endswith((".mp3", ".wav", ".m4a"))
+                        ):
+                            found.append(v)
+
+                    for u in extract_urls(v):
+                        if u.lower().endswith((".mp3", ".wav", ".m4a")) or "audio" in u.lower():
+                            found.append(u)
+
+                walk(v)
+
+        elif isinstance(x, list):
+            for item in x:
+                walk(item)
+
+        elif isinstance(x, str):
+            for u in extract_urls(x):
+                if u.lower().endswith((".mp3", ".wav", ".m4a")) or "audio" in u.lower():
+                    found.append(u)
+
+    walk(obj)
+    return list(dict.fromkeys(found))
+
+
+def guess_task_id(obj):
+    if not isinstance(obj, dict):
+        return None
+    data_obj = obj.get("data") or {}
+    return (
+        obj.get("taskId")
+        or obj.get("id")
+        or data_obj.get("taskId")
+        or data_obj.get("id")
     )
 
-    # download cover jika ada
-    if cover_url:
-        cover_file = requests.get(cover_url, timeout=60).content
-        supabase.storage.from_("covers").upload(
-            f"{task_id}.jpg",
-            cover_file,
-            {"content-type": "image/jpeg"}
-        )
 
-    # insert metadata
-    supabase.table("songs").insert({
-        "task_id": task_id,
-        "title": title,
-        "prompt": prompt,
-        "status": "completed",
-        "audio_path": f"audio/{task_id}.mp3",
-        "cover_path": f"covers/{task_id}.jpg" if cover_url else None,
-        "lyrics": lyrics,
-        "duration": duration
-    }).execute()
+def guess_status(obj):
+    if not isinstance(obj, dict):
+        return None
+    data_obj = obj.get("data") or {}
+    return (
+        obj.get("status")
+        or data_obj.get("status")
+        or obj.get("state")
+        or data_obj.get("state")
+    )
 
-# ==================================================
-# ROOT
-# ==================================================
+
+# =========================
+# Routes
+# =========================
 @app.get("/")
-def root():
-    return {"status": "running", "version": "5.0.0"}
+def home():
+    return {
+        "status": "ok",
+        "generate": "/generate",
+        "callback": "/callback",
+        "check_status": "/music/status",
+        "callback_url_used": CALLBACK_URL
+    }
 
-# ==================================================
-# GENERATE
-# ==================================================
-@app.post("/generate-music")
-async def generate_music(payload: GenerateMusicRequest):
 
-    body = {
-        "prompt": payload.prompt,
-        "customMode": payload.customMode,
-        "instrumental": payload.instrumental,
-        "model": payload.model,
+@app.post("/generate")
+def generate_music(body: GenerateRequest):
+    payload = {
+        "prompt": body.prompt,
+        "style": body.style,
+        "title": body.title,
+        "customMode": body.customMode,
+        "instrumental": body.instrumental,
+        "model": body.model,
+        "negativeTags": body.negativeTags,
         "callBackUrl": CALLBACK_URL
     }
 
-    if payload.style:
-        body["style"] = payload.style
-    if payload.title:
-        body["title"] = payload.title
-
-    async with httpx.AsyncClient(timeout=60) as client:
-        res = await client.post(
-            MUSIC_GENERATE_URL,
-            headers=suno_headers(),
-            json=body
-        )
-
-    res.raise_for_status()
-    return res.json()
-
-# ==================================================
-# STATUS (AUTO SAVE + DONE)
-# ==================================================
-@app.get("/generate/status/{task_id}")
-def generate_status(task_id: str):
-
-    try:
-        r = requests.get(
-            STATUS_URL,
-            headers=suno_headers(),
-            params={"taskId": task_id},
-            timeout=30
-        )
-        r.raise_for_status()
-    except Exception:
-        return {"status": "processing"}
-
-    res = r.json()
-    item = res.get("data")
-
-    if isinstance(item, list) and len(item) > 0:
-        item = item[0]
-
-    if not item:
-        return {"status": "processing"}
-
-    state = item.get("state") or item.get("status")
-
-    if state != "succeeded":
-        return {"status": "processing"}
-
-    audio_url = item.get("streamAudioUrl")
-    cover_url = item.get("image_url")
-    title = item.get("title")
-    prompt = item.get("prompt")
-    lyrics = item.get("prompt")
-    duration = item.get("duration")
-
-    if not audio_url:
-        return {"status": "processing"}
-
-    # cek sudah ada di DB belum
-    existing = supabase.table("songs") \
-        .select("task_id") \
-        .eq("task_id", task_id) \
-        .execute()
-
-    if not existing.data:
-        simpan_hasil_lagu(
-            task_id,
-            title,
-            prompt,
-            audio_url,
-            cover_url,
-            lyrics,
-            duration
-        )
-
-    public_audio_url = f"{SUPABASE_URL}/storage/v1/object/public/audio/{task_id}.mp3"
-    public_cover_url = f"{SUPABASE_URL}/storage/v1/object/public/covers/{task_id}.jpg" if cover_url else None
-
-    return {
-        "status": "done",
-        "audio_url": public_audio_url,
-        "image_url": public_cover_url,
-        "duration": duration,
-        "title": title,
-        "lyrics": lyrics
+    headers = {
+        "Authorization": f"Bearer {SUNO_TOKEN}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
     }
 
-# ==================================================
-# CALLBACK
-# ==================================================
+    try:
+        r = requests.post(SUNO_API_URL, json=payload, headers=headers, timeout=60)
+        resp = r.json()
+        task_id = guess_task_id(resp)
+
+        return {
+            "status": "sent",
+            "taskId": task_id,
+            "callbackUrl": CALLBACK_URL,
+            "suno_status_code": r.status_code,
+            "suno_response": resp,
+            "next_step": "Tunggu 10-60 detik lalu cek GET /music/status"
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/callback")
 async def callback(request: Request):
+    """
+    Suno akan POST hasil ke sini
+    """
     data = await request.json()
-    logging.info(f"CALLBACK: {data}")
-    return {"ok": True}
+
+    task_id = guess_task_id(data)
+    key = task_id if task_id else "latest"
+
+    RESULTS[key] = data
+    RESULTS["latest"] = data
+
+    print("=== CALLBACK FROM SUNO ===")
+    print(json.dumps(data, indent=2))
+
+    return {"status": "ok", "saved_as": key}
+
+
+@app.get("/music/status")
+def music_status():
+    """
+    Cek status:
+    - pending kalau belum ada audio_url
+    - done kalau sudah ada audio_url
+    """
+    latest = RESULTS.get("latest")
+
+    if not latest:
+        return {
+            "status": "pending",
+            "message": "Belum ada callback masuk ke /callback. Pastikan app Render kamu ON dan URL callback benar."
+        }
+
+    audio_urls = find_audio_urls(latest)
+    status_guess = guess_status(latest)
+    task_id = guess_task_id(latest)
+
+    if audio_urls:
+        return {
+            "status": "done",
+            "taskId": task_id,
+            "audio_url": audio_urls[0],
+            "all_audio_urls": audio_urls,
+            "status_guess": status_guess
+        }
+
+    return {
+        "status": "pending",
+        "taskId": task_id,
+        "status_guess": status_guess,
+        "message": "Callback sudah masuk, tapi audio_url belum ada (masih proses). Coba lagi 10-30 detik."
+    }
