@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 # ==================================================
-# WAJIB PALING ATAS: BUAT FOLDER MEDIA
+# BUAT FOLDER MEDIA
 # ==================================================
 os.makedirs("media", exist_ok=True)
 
@@ -30,12 +30,9 @@ STATUS_URL = f"{SUNO_BASE_API}/generate/record-info"
 # ================= APP =================
 app = FastAPI(
     title="AI Music Suno API Wrapper",
-    version="1.0.2"
+    version="2.0.0"
 )
 
-# ==================================================
-# STATIC FILES (SETELAH app dibuat)
-# ==================================================
 app.mount("/media", StaticFiles(directory="media"), name="media")
 
 # ================= REQUEST MODEL =================
@@ -55,32 +52,23 @@ def suno_headers():
     if not SUNO_API_KEY:
         raise HTTPException(
             status_code=500,
-            detail="SUNO_API_KEY not set in environment"
+            detail="SUNO_API_KEY not set"
         )
     return {
         "Authorization": f"Bearer {SUNO_API_KEY}",
         "Content-Type": "application/json"
     }
 
-# ================= ENDPOINTS =================
+# ================= BASIC =================
 @app.get("/")
 def root():
-    return {"status": "running", "service": "AI Music Suno API"}
+    return {"status": "running"}
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-@app.post("/boost-style")
-async def boost_style(payload: BoostStyleRequest):
-    async with httpx.AsyncClient(timeout=60) as client:
-        res = await client.post(
-            STYLE_GENERATE_URL,
-            headers=suno_headers(),
-            json={"content": payload.content}
-        )
-    return res.json()
-
+# ================= GENERATE =================
 @app.post("/generate-music")
 async def generate_music(payload: GenerateMusicRequest):
     body = {
@@ -102,26 +90,13 @@ async def generate_music(payload: GenerateMusicRequest):
             headers=suno_headers(),
             json=body
         )
+
     return res.json()
 
-@app.get("/record-info/{task_id}")
-async def record_info(task_id: str):
-    async with httpx.AsyncClient(timeout=30) as client:
-        res = await client.get(
-            STATUS_URL,
-            headers=suno_headers(),
-            params={"taskId": task_id}
-        )
-    return res.json()
-
-@app.post("/callback")
-async def callback(request: Request):
-    data = await request.json()
-    print("SUNO CALLBACK:", data)
-    return {"status": "received"}
-
+# ================= STATUS (NO TEMP) =================
 @app.get("/generate/status/{task_id}")
 def generate_status(task_id: str):
+
     r = requests.get(
         STATUS_URL,
         headers=suno_headers(),
@@ -138,28 +113,40 @@ def generate_status(task_id: str):
         item = res["data"][0]
 
     if not item:
-        return {"status": "processing", "result": res}
+        return {"status": "processing"}
 
     state = item.get("state") or item.get("status")
 
-    # ================== TIDAK PAKAI TEMP ==================
-    audio_url = item.get("streamAudioUrl")
-    # ======================================================
+    if state != "succeeded":
+        return {"status": "processing"}
 
-    if state == "succeeded" and audio_url:
-        audio_bytes = requests.get(audio_url).content
+    # ==================== ONLY STREAM ====================
+    stream_url = item.get("streamAudioUrl")
 
-        file_path = f"media/{task_id}.mp3"
+    if not stream_url:
+        return {"status": "processing"}
+
+    # ================= DOWNLOAD ==========================
+    file_path = f"media/{task_id}.mp3"
+
+    # kalau file sudah ada, tidak download ulang
+    if not os.path.exists(file_path):
+        audio_bytes = requests.get(stream_url).content
         with open(file_path, "wb") as f:
             f.write(audio_bytes)
 
-        return {
-            "status": "done",
-            "audio_url": f"{BASE_URL}/media/{task_id}.mp3",
-            "result": item
-        }
+    # ================= RETURN ONLY YOUR URL ==============
+    return {
+        "status": "done",
+        "audio_url": f"{BASE_URL}/media/{task_id}.mp3"
+    }
 
-    return {"status": "processing", "result": item}
+# ================= CALLBACK =================
+@app.post("/callback")
+async def callback(request: Request):
+    data = await request.json()
+    print("CALLBACK:", data)
+    return {"ok": True}
 
 # ================= DB TEST =================
 def get_conn():
