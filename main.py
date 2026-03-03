@@ -364,3 +364,50 @@ async def callback(request: Request):
     except Exception as e:
         print("CALLBACK ERROR:", e)
         return {"status": "error", "message": str(e)}
+
+@app.get("/record-info/{task_id}")
+async def record_info(task_id: str):
+    try:
+        # ambil hasil dari Suno
+        url = f"https://api.sunoapi.org/api/v1/generate/record-info?taskId={task_id}"
+        headers = {"Authorization": f"Bearer {SUNO_API_KEY}"}
+        res = requests.get(url, headers=headers)
+        data = res.json()
+
+        # ambil audioUrl
+        record = data.get("data", {})
+        audio_url = record.get("audioUrl")
+        title = record.get("title", "Untitled")
+        lyrics = record.get("lyrics", "")
+        artist = "AI Generator"
+        genre = "AI"
+
+        if audio_url:
+            import uuid
+
+            file_id = str(uuid.uuid4())
+            audio_path = f"songs/{file_id}.mp3"
+
+            # download mp3 dari Suno
+            audio_bytes = requests.get(audio_url).content
+
+            # upload ke Supabase bucket "music"
+            supabase.storage.from_("music").upload(
+                audio_path,
+                audio_bytes
+            )
+
+            # simpan ke table songs
+            supabase.table("songs").insert({
+                "title": title,
+                "artist": artist,
+                "genre": genre,
+                "lyrics": lyrics,
+                "audio_path": audio_path,
+                "cover_path": None
+            }).execute()
+
+        return data
+
+    except Exception as e:
+        return {"error": str(e)}
