@@ -193,9 +193,56 @@ async def generate_video(payload: VideoRequest):
     return res.json()
 
 
+from fastapi import Request
+import uuid
+import requests
+
 @app.post("/callback")
 async def callback(request: Request):
     data = await request.json()
+
+    print("CALLBACK MASUK")
+
+    audio_url = data.get("audio_url")
+    lyrics = data.get("lyrics", "")
+    title = data.get("title", "Untitled")
+    artist = "AI Generator"
+    genre = "AI"
+
+    if not audio_url:
+        print("TIDAK ADA AUDIO URL")
+        return {"status": "no audio"}
+
+    try:
+        file_id = str(uuid.uuid4())
+        audio_path = f"songs/{file_id}.mp3"
+
+        print("DOWNLOAD AUDIO")
+        audio_bytes = requests.get(audio_url).content
+
+        print("UPLOAD KE SUPABASE")
+        supabase.storage.from_("music").upload(
+            audio_path,
+            audio_bytes,
+            {"upsert": True}
+        )
+
+        print("SIMPAN DATABASE")
+        supabase.table("songs").insert({
+            "title": title,
+            "artist": artist,
+            "genre": genre,
+            "lyrics": lyrics,
+            "audio_path": audio_path
+        }).execute()
+
+        print("SELESAI")
+
+        return {"status": "saved"}
+
+    except Exception as e:
+        print("ERROR:", e)
+        return {"error": str(e)}
 
     task_id = data.get("taskId") or data.get("task_id")
     items = data.get("data") or []
@@ -412,4 +459,5 @@ async def record_info(task_id: str):
 
     except Exception as e:
         return {"error": str(e)}
+
 
