@@ -320,3 +320,47 @@ async def upload_song(
     }).execute()
 
     return {"status": "success"}
+
+@app.post("/callback")
+async def callback(request: Request):
+    try:
+        data = await request.json()
+
+        print("Callback data:", data)
+
+        audio_url = data.get("audio_url")
+        lyrics = data.get("lyrics", "")
+        title = data.get("title", "Untitled")
+        artist = "AI Generator"
+        genre = "AI"
+
+        if audio_url:
+            file_id = str(uuid.uuid4())
+            audio_path = f"songs/{file_id}.mp3"
+
+            # download mp3 dari suno
+            audio_bytes = requests.get(audio_url).content
+
+            # upload ke storage bucket "music"
+            supabase.storage.from_("music").upload(
+                audio_path,
+                audio_bytes
+            )
+
+            # simpan ke database
+            supabase.table("songs").insert({
+                "title": title,
+                "artist": artist,
+                "genre": genre,
+                "lyrics": lyrics,
+                "audio_path": audio_path,
+                "cover_path": None
+            }).execute()
+
+            print("SUCCESS SAVE TO SUPABASE")
+
+        return {"status": "ok"}
+
+    except Exception as e:
+        print("CALLBACK ERROR:", e)
+        return {"status": "error", "message": str(e)}
