@@ -1,6 +1,7 @@
 import os
 import httpx
 import requests
+import uuid
 import psycopg2
 import json
 from supabase import create_client
@@ -411,3 +412,4 @@ async def record_info(task_id: str):
 
     except Exception as e:
         return {"error": str(e)}
+
