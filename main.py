@@ -3,7 +3,12 @@ import httpx
 import requests
 import psycopg2
 import json
+from supabase import create_client
 
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -282,3 +287,36 @@ def db_all():
     cur.close()
     conn.close()
     return rows
+
+from fastapi import UploadFile, File, Form
+
+@app.post("/upload-song")
+async def upload_song(
+    title: str = Form(...),
+    artist: str = Form(...),
+    genre: str = Form(...),
+    lyrics: str = Form(...),
+    audio: UploadFile = File(...),
+    cover: UploadFile = File(...)
+):
+    audio_bytes = await audio.read()
+    cover_bytes = await cover.read()
+
+    audio_path = f"songs/{audio.filename}"
+    cover_path = f"covers/{cover.filename}"
+
+    # upload ke bucket "music"
+    supabase.storage.from_("music").upload(audio_path, audio_bytes)
+    supabase.storage.from_("music").upload(cover_path, cover_bytes)
+
+    # simpan ke database
+    supabase.table("songs").insert({
+        "title": title,
+        "artist": artist,
+        "genre": genre,
+        "lyrics": lyrics,
+        "audio_path": audio_path,
+        "cover_path": cover_path
+    }).execute()
+
+    return {"status": "success"}
