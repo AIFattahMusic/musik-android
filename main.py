@@ -1,14 +1,14 @@
 import os
 import httpx
 import requests
-import psycopg2
-import psycopg2.extras
-from fastapi import FastAPI, Request, HTTPException
+import firebase_admin
+from firebase_admin import credentials, firestore
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModelfrom typing import Optional
 import time
+import json
 
 # ==================================================
 # KONFIGURASI FOLDER & ENV
@@ -16,21 +16,39 @@ import time
 os.makedirs("media", exist_ok=True)
 
 SUNO_API_KEY = os.getenv("SUNO_API_KEY")
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-# Fix untuk library psycopg2/SQLAlchemy yang butuh postgresql://
-if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-
 BASE_URL = os.getenv("BASE_URL", "https://musik-android.onrender.com")
 CALLBACK_URL = f"{BASE_URL}/callback"
 
-SUNO_BASE_API = "https://api.kie.ai/api/v1"
-MUSIC_GENERATE_URL = f"{SUNO_BASE_API}/generate"
-STATUS_URL = f"{SUNO_BASE_API}/generate/record-info"
-VIDEO_URL = f"{SUNO_BASE_API}/mp4/generate"
+# ==================================================
+# KONEKSI FIREBASE (ADMIN SDK)
+# ==================================================
+# Cara 1: Ambil dari Environment Variable (Rekomendasi untuk Render)
+firebase_config = os.getenv("FIREBASE_SERVICE_ACCOUNT")
 
-app = FastAPI(title="Fattah AI Music API", version="2.5.1")
+if firebase_config:
+    try:
+        cred = credentials.Certificate(json.loads(firebase_config))
+        firebase_admin.initialize_app(cred)
+        db = firestore.client()
+        print("✅ Firebase Connected via ENV")
+    except Exception as e:
+        print(f"❌ Firebase Error: {e}")
+        db = None
+else:
+    # Cara 2: Pakai file lokal (untuk testing di komputer)
+    try:
+        cred = credentials.Certificate("serviceAccountKey.json")
+        firebase_admin.initialize_app(cred)
+        db = firestore.client()
+        print("✅ Firebase Connected via JSON File")
+    except:
+        db = None
+        print("⚠️ Firebase NOT Connected. Set FIREBASE_SERVICE_ACCOUNT env var!")
+
+# ==================================================
+# APP INIT
+# ==================================================
+app = FastAPI(title="Fattah AI Music - Firebase Backend")
 
 app.add_middleware(
     CORSMiddleware,
@@ -41,59 +59,16 @@ app.add_middleware(
 
 app.mount("/media", StaticFiles(directory="media"), name="media")
 
-# ==================================================
-# DATABASE HELPERS
-# ==================================================
-def get_conn():
-    if not DATABASE_URL:
-        raise Exception("DATABASE_URL tidak ditemukan di Environment Variables")
-    return psycopg2.connect(DATABASE_URL)
-
-def init_db():
-    try:
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS songs (
-                id SERIAL PRIMARY KEY,
-                task_id TEXT UNIQUE,
-                user_id TEXT,
-                title TEXT,
-                audio_url TEXT,
-                cover_url TEXT,
-                lyrics TEXT,
-                style TEXT,
-                duration DOUBLE PRECISION,
-                status TEXT,
-                audio_id TEXT,
-                video_task_id TEXT,
-                video_url TEXT,
-                created_at BIGINT
-            );
-        """)
-        conn.commit()
-        cur.close()
-        conn.close()
-        print("Database initialized successfully")
-    except Exception as e:
-        print(f"Gagal inisialisasi database: {e}")
-
-@app.on_event("startup")
-def startup():
-    init_db()
-
-# ================= REQUEST MODELS =================
-class GenerateMusicRequest(BaseModel):
+class GenerateRequest(BaseModel):
     prompt: str
-    userId: Optional[str] = "public"
+    userId: Optional[str] = None
     style: Optional[str] = None
     title: Optional[str] = None
     instrumental: bool = False
     customMode: bool = False
     model: str = "V4_5"
 
-# ================= HELPERS =================
-def save_remote_file(url: str, filename: str):
+def save_file(url: str, filename: str):
     try:
         r = requests.get(url, timeout=60)
         with open(f"media/{filename}", "wb") as f:
@@ -102,19 +77,17 @@ def save_remote_file(url: str, filename: str):
     except:
         return url
 
-# ================= ENDPOINTS =================
+# ==================================================
+# ENDPOINTS
+# ==================================================
 
 @app.get("/")
-def home():
-    return {"status": "online", "db_connected": DATABASE_URL is not None}
+def health():
+    return {"status": "online", "firebase_connected": db is not None}
 
 @app.post("/generate-music")
-async def generate_music(payload: GenerateMusicRequest):
-    headers = {
-        "Authorization": f"Bearer {SUNO_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
+async def generate_music(payload: GenerateRequest):
+    headers = {"Authorization": f"Bearer {SUNO_API_KEY}", "Content-Type": "application/json"}
     body = {
         "prompt": payload.prompt,
         "customMode": payload.customMode,
@@ -126,82 +99,50 @@ async def generate_music(payload: GenerateMusicRequest):
     if payload.title: body["title"] = payload.title
 
     async with httpx.AsyncClient(timeout=60) as client:
-        res = await client.post(MUSIC_GENERATE_URL, headers=headers, json=body)
+        res = await client.post("https://api.kie.ai/api/v1/generate", headers=headers, json=body)
     
     data = res.json()
     
-    if res.status_code == 200 and data.get("data"):
+    # Simpan data awal ke Firestore agar muncul "Processing" di app
+    if db and res.status_code == 200 and data.get("data"):
         task_id = data["data"].get("taskId")
         if task_id:
-            try:
-                conn = get_conn()
-                cur = conn.cursor()
-                cur.execute("""
-                    INSERT INTO songs (task_id, user_id, title, style, lyrics, status, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (task_id) DO NOTHING
-                """, (task_id, payload.userId, payload.title, payload.style, payload.prompt, "processing", int(time.time() * 1000)))
-                conn.commit()
-                cur.close()
-                conn.close()
-            except Exception as e:
-                print(f"DB Error: {e}")
+            db.collection("songs").document(task_id).set({
+                "taskId": task_id,
+                "userId": payload.userId,
+                "title": payload.title or "Untitled",
+                "style": payload.style,
+                "lyrics": payload.prompt,
+                "status": "processing",
+                "createdAt": int(time.time() * 1000)
+            }, merge=True)
 
     return data
 
 @app.post("/callback")
 async def callback(request: Request):
-    try:
-        payload = await request.json()
-        task_id = payload.get("taskId")
-        items = payload.get("data", [])
-        
-        if not items: return {"status": "no_data"}
-        
-        item = items[0]
-        if item.get("state") != "succeeded": return {"status": "not_ready"}
-
+    payload = await request.json()
+    task_id = payload.get("taskId")
+    items = payload.get("data", [])
+    
+    if not items or not db:
+        return {"status": "ignored"}
+    
+    item = items[0]
+    if item.get("state") == "succeeded":
         audio_url = item.get("audioUrl") or item.get("streamAudioUrl")
-        
         if audio_url:
-            local_audio = save_remote_file(audio_url, f"{task_id}.mp3")
-            conn = get_conn()
-            cur = conn.cursor()
-            cur.execute("""
-                UPDATE songs SET 
-                    audio_url = %s,
-                    cover_url = %s,
-                    audio_id = %s,
-                    status = 'completed'
-                WHERE task_id = %s
-            """, (local_audio, item.get("imageUrl"), item.get("audioId"), task_id))
-            conn.commit()
-            cur.close()
-            conn.close()
+            # Simpan file ke server Anda (Opsional)
+            local_audio = save_file(audio_url, f"{task_id}.mp3")
+            
+            # Update data di Firestore
+            db.collection("songs").document(task_id).update({
+                "audioUrl": local_audio,
+                "imageUrl": item.get("imageUrl"),
+                "duration": item.get("duration"),
+                "status": "completed"
+            })
+            print(f"✅ Song {task_id} completed and updated in Firestore")
             return {"status": "success"}
-    except Exception as e:
-        print(f"Callback Error: {e}")
-    return {"status": "ignored"}
-
-@app.get("/get-songs")
-def get_songs(user_id: Optional[str] = None):
-    try:
-        conn = get_conn()
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        if user_id:
-            cur.execute("SELECT * FROM songs WHERE user_id = %s OR user_id = 'public' ORDER BY id DESC", (user_id,))
-        else:
-            cur.execute("SELECT * FROM songs WHERE status = 'completed' ORDER BY id DESC LIMIT 50")
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        return rows
-    except Exception as e:
-        return {"error": str(e)}
-
-@app.get("/record-info/{task_id}")
-async def get_info(task_id: str):
-    headers = {"Authorization": f"Bearer {SUNO_API_KEY}"}
-    async with httpx.AsyncClient() as client:
-        res = await client.get(STATUS_URL, headers=headers, params={"taskId": task_id})
-    return res.json()
+            
+    return {"status": "processing"}
