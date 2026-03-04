@@ -6,7 +6,8 @@ from firebase_admin import credentials, firestore
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel from typing import Optional
+from pydantic import BaseModel
+from typing import Optional
 import time
 import json
 
@@ -146,4 +147,5 @@ async def callback(request: Request):
             return {"status": "success"}
             
     return {"status": "processing"}
+
 
