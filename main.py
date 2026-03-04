@@ -103,25 +103,17 @@ async def generate_music(payload: GenerateRequest):
         "model": payload.model,
         "callBackUrl": CALLBACK_URL
     }
-
-    if payload.style:
-        body["style"] = payload.style
-
-    if payload.title:
-        body["title"] = payload.title
+    if payload.style: body["style"] = payload.style
+    if payload.title: body["title"] = payload.title
 
     async with httpx.AsyncClient(timeout=60) as client:
-        res = await client.post(
-            "https://api.kie.ai/api/v1/generate",
-            headers=headers,
-            json=body
-        )
+        res = await client.post("https://api.kie.ai/api/v1/generate", headers=headers, json=body)
     
     data = res.json()
     
+    # Simpan data awal ke koleksi 'songs' dan 'global_songs'
     if db and res.status_code == 200 and data.get("data"):
         task_id = data["data"].get("taskId")
-
         if task_id:
             song_data = {
                 "taskId": task_id,
@@ -132,35 +124,26 @@ async def generate_music(payload: GenerateRequest):
                 "status": "processing",
                 "createdAt": int(time.time() * 1000)
             }
-
             db.collection("songs").document(task_id).set(song_data, merge=True)
             db.collection("global_songs").document(task_id).set(song_data, merge=True)
 
     return data
 
-
 @app.get("/record-info/{task_id}")
 async def record_info(task_id: str):
-
     headers = {"Authorization": f"Bearer {SUNO_API_KEY}"}
     params = {"taskId": task_id}
-
+    
     async with httpx.AsyncClient(timeout=30) as client:
-        res = await client.get(
-            "https://api.kie.ai/api/v1/generate/record-info",
-            headers=headers,
-            params=params
-        )
-
+        res = await client.get("https://api.kie.ai/api/v1/generate/record-info", headers=headers, params=params)
+    
     if res.status_code != 200:
         raise HTTPException(status_code=res.status_code, detail="Gagal mengambil info dari provider")
         
     return res.json()
 
-
 @app.post("/callback")
 async def callback(request: Request):
-
     payload = await request.json()
     print(f"CALLBACK RECEIVED: {payload}")
     
@@ -171,21 +154,16 @@ async def callback(request: Request):
         return {"status": "ignored"}
     
     item = items[0]
-
     state = str(item.get("state", "")).lower()
     
     if state in ["succeeded", "success", "completed"]:
-
         audio_url = item.get("audioUrl") or item.get("streamAudioUrl")
-
         if audio_url:
-
             local_audio = save_file(audio_url, f"{task_id}.mp3")
-
-            # 🔹 Ambil style dari tags API
-            tags = item.get("tags", "")
-            style_value = tags.split(",")[0] if tags else "AI Music"
-
+            
+            # 🔹 STYLE DIAMBIL DARI TAGS API
+            style_value = item.get("tags")
+            
             update_data = {
                 "audioUrl": local_audio,
                 "imageUrl": item.get("imageUrl") or item.get("image_url"),
@@ -194,12 +172,11 @@ async def callback(request: Request):
                 "style": style_value,
                 "status": "completed"
             }
-
+            
             db.collection("songs").document(task_id).update(update_data)
             db.collection("global_songs").document(task_id).update(update_data)
-
+            
             print(f"✅ Task {task_id} marked as COMPLETED in Firestore")
-
             return {"status": "success"}
             
     return {"status": "processing"}
