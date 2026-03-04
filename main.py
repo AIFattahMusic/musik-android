@@ -158,7 +158,27 @@ async def generate_music(payload: GenerateMusicRequest):
 @app.get("/record-info/{task_id}")
 async def record_info(task_id: str):
     async with httpx.AsyncClient(timeout=30) as client:
-        res = await client.get(
+     audio_url = data["data"]["response"]["sunoData"][0]["audioUrl"]
+
+if audio_url:
+    file_id = str(uuid.uuid4())
+    audio_path = f"songs/{file_id}.mp3"
+
+    audio_bytes = requests.get(audio_url).content
+
+    supabase.storage.from_("music").upload(
+        audio_path,
+        audio_bytes,
+        {"upsert": True}
+    )
+
+    supabase.table("songs").insert({
+        "title": data["data"]["response"]["sunoData"][0]["title"],
+        "artist": "AI Generator",
+        "genre": "AI",
+        "lyrics": data["data"]["response"]["sunoData"][0]["prompt"],
+        "audio_path": audio_path
+    }).execute() res = await client.get(
             STATUS_URL,
             headers=suno_headers(),
             params={"taskId": task_id}
@@ -459,5 +479,6 @@ async def record_info(task_id: str):
 
     except Exception as e:
         return {"error": str(e)}
+
 
 
