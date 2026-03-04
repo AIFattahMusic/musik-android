@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 import time
 import json
+from supabase import create_client
 
 # ==================================================
 # KONFIGURASI FOLDER & ENV
@@ -19,6 +20,15 @@ os.makedirs("media", exist_ok=True)
 SUNO_API_KEY = os.getenv("SUNO_API_KEY")
 BASE_URL = os.getenv("BASE_URL", "https://musik-android.onrender.com")
 CALLBACK_URL = f"{BASE_URL}/callback"
+
+# SUPABASE CONFIG
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+supabase = None
+if SUPABASE_URL and SUPABASE_KEY:
+    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    print("✅ Supabase Connected")
 
 # ==================================================
 # KONEKSI FIREBASE (ADMIN SDK)
@@ -79,6 +89,23 @@ def save_file(url: str, filename: str):
     except:
         return url
 
+
+# ================= SUPABASE UPLOAD =================
+def upload_to_supabase(file_path, filename):
+    if not supabase:
+        return None
+
+    try:
+        with open(file_path, "rb") as f:
+            supabase.storage.from_("music").upload(filename, f)
+
+        public_url = supabase.storage.from_("music").get_public_url(filename)
+        return public_url
+    except Exception as e:
+        print("❌ Supabase upload error:", e)
+        return None
+
+
 # ================= ENDPOINTS =================
 
 @app.get("/")
@@ -129,6 +156,7 @@ async def generate_music(payload: GenerateRequest):
 
     return data
 
+
 @app.get("/record-info/{task_id}")
 async def record_info(task_id: str):
     headers = {"Authorization": f"Bearer {SUNO_API_KEY}"}
@@ -141,6 +169,7 @@ async def record_info(task_id: str):
         raise HTTPException(status_code=res.status_code, detail="Gagal mengambil info dari provider")
         
     return res.json()
+
 
 @app.post("/callback")
 async def callback(request: Request):
@@ -159,13 +188,17 @@ async def callback(request: Request):
     if state in ["succeeded", "success", "completed"]:
         audio_url = item.get("audioUrl") or item.get("streamAudioUrl")
         if audio_url:
+
+            # download audio
             local_audio = save_file(audio_url, f"{task_id}.mp3")
-            
-            # 🔹 STYLE DIAMBIL DARI TAGS API
+
+            # upload ke supabase storage otomatis
+            supabase_url = upload_to_supabase(f"media/{task_id}.mp3", f"{task_id}.mp3")
+
             style_value = item.get("tags")
-            
+
             update_data = {
-                "audioUrl": local_audio,
+                "audioUrl": supabase_url or local_audio,
                 "imageUrl": item.get("imageUrl") or item.get("image_url"),
                 "duration": item.get("duration") or 0,
                 "lyrics": item.get("lyrics") or item.get("prompt"),
