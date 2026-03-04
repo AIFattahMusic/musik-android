@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 import time
 import json
 
@@ -63,6 +63,7 @@ app.mount("/media", StaticFiles(directory="media"), name="media")
 class GenerateRequest(BaseModel):
     prompt: str
     userId: Optional[str] = None
+    style: Optional[str] = None
     title: Optional[str] = None
     instrumental: bool = False
     customMode: bool = False
@@ -83,19 +84,18 @@ def save_file(url: str, filename: str):
 @app.get("/")
 def health():
     return {
-        "status": "online",
+        "status": "online", 
         "firebase_connected": db is not None,
         "base_url": BASE_URL
     }
 
 @app.post("/generate-music")
 async def generate_music(payload: GenerateRequest):
-
     headers = {
-        "Authorization": f"Bearer {SUNO_API_KEY}",
+        "Authorization": f"Bearer {SUNO_API_KEY}", 
         "Content-Type": "application/json"
     }
-
+    
     body = {
         "prompt": payload.prompt,
         "customMode": payload.customMode,
@@ -103,6 +103,9 @@ async def generate_music(payload: GenerateRequest):
         "model": payload.model,
         "callBackUrl": CALLBACK_URL
     }
+
+    if payload.style:
+        body["style"] = payload.style
 
     if payload.title:
         body["title"] = payload.title
@@ -113,12 +116,10 @@ async def generate_music(payload: GenerateRequest):
             headers=headers,
             json=body
         )
-
+    
     data = res.json()
-
-    # Simpan data awal ke Firestore
+    
     if db and res.status_code == 200 and data.get("data"):
-
         task_id = data["data"].get("taskId")
 
         if task_id:
@@ -126,6 +127,7 @@ async def generate_music(payload: GenerateRequest):
                 "taskId": task_id,
                 "userId": payload.userId,
                 "title": payload.title or "Untitled",
+                "style": payload.style or "AI Music",
                 "lyrics": payload.prompt,
                 "status": "processing",
                 "createdAt": int(time.time() * 1000)
@@ -151,11 +153,8 @@ async def record_info(task_id: str):
         )
 
     if res.status_code != 200:
-        raise HTTPException(
-            status_code=res.status_code,
-            detail="Gagal mengambil info dari provider"
-        )
-
+        raise HTTPException(status_code=res.status_code, detail="Gagal mengambil info dari provider")
+        
     return res.json()
 
 
@@ -163,18 +162,18 @@ async def record_info(task_id: str):
 async def callback(request: Request):
 
     payload = await request.json()
-    print("CALLBACK RECEIVED:", payload)
-
+    print(f"CALLBACK RECEIVED: {payload}")
+    
     task_id = payload.get("taskId")
     items = payload.get("data", [])
-
+    
     if not items or not db:
         return {"status": "ignored"}
-
+    
     item = items[0]
 
     state = str(item.get("state", "")).lower()
-
+    
     if state in ["succeeded", "success", "completed"]:
 
         audio_url = item.get("audioUrl") or item.get("streamAudioUrl")
@@ -183,13 +182,9 @@ async def callback(request: Request):
 
             local_audio = save_file(audio_url, f"{task_id}.mp3")
 
-            # 🔹 Ambil style otomatis dari API
-            style_value = (
-                item.get("style")
-                or item.get("tags")
-                or item.get("genre")
-                or "AI Music"
-            )
+            # 🔹 Ambil style dari tags API
+            tags = item.get("tags", "")
+            style_value = tags.split(",")[0] if tags else "AI Music"
 
             update_data = {
                 "audioUrl": local_audio,
@@ -203,8 +198,8 @@ async def callback(request: Request):
             db.collection("songs").document(task_id).update(update_data)
             db.collection("global_songs").document(task_id).update(update_data)
 
-            print(f"✅ Task {task_id} COMPLETED + STYLE SAVED")
+            print(f"✅ Task {task_id} marked as COMPLETED in Firestore")
 
             return {"status": "success"}
-
+            
     return {"status": "processing"}
