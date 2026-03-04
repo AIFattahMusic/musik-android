@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional
 import time
 
 # ==================================================
@@ -17,19 +17,21 @@ os.makedirs("media", exist_ok=True)
 
 SUNO_API_KEY = os.getenv("SUNO_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Fix untuk library psycopg2/SQLAlchemy yang butuh postgresql://
+if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
 BASE_URL = os.getenv("BASE_URL", "https://musik-android.onrender.com")
 CALLBACK_URL = f"{BASE_URL}/callback"
 
-# API Endpoints Kie.ai (Suno)
 SUNO_BASE_API = "https://api.kie.ai/api/v1"
 MUSIC_GENERATE_URL = f"{SUNO_BASE_API}/generate"
 STATUS_URL = f"{SUNO_BASE_API}/generate/record-info"
-LYRICS_URL = f"{SUNO_BASE_API}/generate/get-timestamped-lyrics"
 VIDEO_URL = f"{SUNO_BASE_API}/mp4/generate"
 
-app = FastAPI(title="Fattah AI Music API", version="2.5.0")
+app = FastAPI(title="Fattah AI Music API", version="2.5.1")
 
-# Tambahkan CORS agar Android bisa akses lancar
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -40,34 +42,42 @@ app.add_middleware(
 app.mount("/media", StaticFiles(directory="media"), name="media")
 
 # ==================================================
-# DATABASE SETUP (AUTO CREATE TABLE)
+# DATABASE HELPERS
 # ==================================================
-def init_db():
-    conn = psycopg2.connect(DATABASE_URL)
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS songs (
-            id SERIAL PRIMARY KEY,
-            task_id TEXT UNIQUE,
-            user_id TEXT,
-            title TEXT,
-            audio_url TEXT,
-            cover_url TEXT,
-            lyrics TEXT,
-            style TEXT,
-            duration DOUBLE PRECISION,
-            status TEXT,
-            audio_id TEXT,
-            video_task_id TEXT,
-            video_url TEXT,
-            created_at BIGINT
-        );
-    """)
-    conn.commit()
-    cur.close()
-    conn.close()
+def get_conn():
+    if not DATABASE_URL:
+        raise Exception("DATABASE_URL tidak ditemukan di Environment Variables")
+    return psycopg2.connect(DATABASE_URL)
 
-# Jalankan saat start
+def init_db():
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS songs (
+                id SERIAL PRIMARY KEY,
+                task_id TEXT UNIQUE,
+                user_id TEXT,
+                title TEXT,
+                audio_url TEXT,
+                cover_url TEXT,
+                lyrics TEXT,
+                style TEXT,
+                duration DOUBLE PRECISION,
+                status TEXT,
+                audio_id TEXT,
+                video_task_id TEXT,
+                video_url TEXT,
+                created_at BIGINT
+            );
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("Database initialized successfully")
+    except Exception as e:
+        print(f"Gagal inisialisasi database: {e}")
+
 @app.on_event("startup")
 def startup():
     init_db()
@@ -83,9 +93,6 @@ class GenerateMusicRequest(BaseModel):
     model: str = "V4_5"
 
 # ================= HELPERS =================
-def get_conn():
-    return psycopg2.connect(DATABASE_URL)
-
 def save_remote_file(url: str, filename: str):
     try:
         r = requests.get(url, timeout=60)
@@ -99,7 +106,7 @@ def save_remote_file(url: str, filename: str):
 
 @app.get("/")
 def home():
-    return {"message": "Fattah AI Music API is Online", "docs": "/docs"}
+    return {"status": "online", "db_connected": DATABASE_URL is not None}
 
 @app.post("/generate-music")
 async def generate_music(payload: GenerateMusicRequest):
@@ -123,80 +130,74 @@ async def generate_music(payload: GenerateMusicRequest):
     
     data = res.json()
     
-    # Simpan task_id dan user_id dulu ke DB agar tidak hilang
     if res.status_code == 200 and data.get("data"):
         task_id = data["data"].get("taskId")
         if task_id:
-            conn = get_conn()
-            cur = conn.cursor()
-            cur.execute("""
-                INSERT INTO songs (task_id, user_id, title, style, lyrics, status, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (task_id) DO NOTHING
-            """, (task_id, payload.userId, payload.title, payload.style, payload.prompt, "processing", int(time.time() * 1000)))
-            conn.commit()
-            cur.close()
-            conn.close()
+            try:
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute("""
+                    INSERT INTO songs (task_id, user_id, title, style, lyrics, status, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (task_id) DO NOTHING
+                """, (task_id, payload.userId, payload.title, payload.style, payload.prompt, "processing", int(time.time() * 1000)))
+                conn.commit()
+                cur.close()
+                conn.close()
+            except Exception as e:
+                print(f"DB Error: {e}")
 
     return data
 
 @app.post("/callback")
 async def callback(request: Request):
-    payload = await request.json()
-    task_id = payload.get("taskId")
-    items = payload.get("data", [])
-    
-    if not items: return {"status": "no_data"}
-    
-    item = items[0]
-    if item.get("state") != "succeeded": return {"status": "not_ready"}
-
-    audio_url = item.get("audioUrl") or item.get("streamAudioUrl")
-    
-    if audio_url:
-        # 1. Download & Simpan Lokal
-        local_audio = save_remote_file(audio_url, f"{task_id}.mp3")
+    try:
+        payload = await request.json()
+        task_id = payload.get("taskId")
+        items = payload.get("data", [])
         
-        # 2. Update Database
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("""
-            UPDATE songs SET 
-                audio_url = %s,
-                cover_url = %s,
-                audio_id = %s,
-                status = 'completed'
-            WHERE task_id = %s
-        """, (local_audio, item.get("imageUrl"), item.get("audioId"), task_id))
+        if not items: return {"status": "no_data"}
         
-        # 3. Trigger Video (Optional)
-        try:
-            requests.post(VIDEO_URL, headers={"Authorization": f"Bearer {SUNO_API_KEY}"}, json={
-                "taskId": task_id, "audioId": item.get("audioId"), "callBackUrl": CALLBACK_URL
-            })
-        except: pass
+        item = items[0]
+        if item.get("state") != "succeeded": return {"status": "not_ready"}
 
-        conn.commit()
-        cur.close()
-        conn.close()
-        return {"status": "success"}
-
+        audio_url = item.get("audioUrl") or item.get("streamAudioUrl")
+        
+        if audio_url:
+            local_audio = save_remote_file(audio_url, f"{task_id}.mp3")
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE songs SET 
+                    audio_url = %s,
+                    cover_url = %s,
+                    audio_id = %s,
+                    status = 'completed'
+                WHERE task_id = %s
+            """, (local_audio, item.get("imageUrl"), item.get("audioId"), task_id))
+            conn.commit()
+            cur.close()
+            conn.close()
+            return {"status": "success"}
+    except Exception as e:
+        print(f"Callback Error: {e}")
     return {"status": "ignored"}
 
 @app.get("/get-songs")
 def get_songs(user_id: Optional[str] = None):
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    
-    if user_id:
-        cur.execute("SELECT * FROM songs WHERE user_id = %s OR user_id = 'public' ORDER BY id DESC", (user_id,))
-    else:
-        cur.execute("SELECT * FROM songs WHERE status = 'completed' ORDER BY id DESC LIMIT 50")
-    
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        if user_id:
+            cur.execute("SELECT * FROM songs WHERE user_id = %s OR user_id = 'public' ORDER BY id DESC", (user_id,))
+        else:
+            cur.execute("SELECT * FROM songs WHERE status = 'completed' ORDER BY id DESC LIMIT 50")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return rows
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.get("/record-info/{task_id}")
 async def get_info(task_id: str):
