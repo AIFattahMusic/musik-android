@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional
 import time
 import json
 
@@ -63,7 +63,6 @@ app.mount("/media", StaticFiles(directory="media"), name="media")
 class GenerateRequest(BaseModel):
     prompt: str
     userId: Optional[str] = None
-    style: Optional[str] = None
     title: Optional[str] = None
     instrumental: bool = False
     customMode: bool = False
@@ -84,18 +83,19 @@ def save_file(url: str, filename: str):
 @app.get("/")
 def health():
     return {
-        "status": "online", 
+        "status": "online",
         "firebase_connected": db is not None,
         "base_url": BASE_URL
     }
 
 @app.post("/generate-music")
 async def generate_music(payload: GenerateRequest):
+
     headers = {
-        "Authorization": f"Bearer {SUNO_API_KEY}", 
+        "Authorization": f"Bearer {SUNO_API_KEY}",
         "Content-Type": "application/json"
     }
-    
+
     body = {
         "prompt": payload.prompt,
         "customMode": payload.customMode,
@@ -103,83 +103,108 @@ async def generate_music(payload: GenerateRequest):
         "model": payload.model,
         "callBackUrl": CALLBACK_URL
     }
-    if payload.style: body["style"] = payload.style
-    if payload.title: body["title"] = payload.title
+
+    if payload.title:
+        body["title"] = payload.title
 
     async with httpx.AsyncClient(timeout=60) as client:
-        res = await client.post("https://api.kie.ai/api/v1/generate", headers=headers, json=body)
-    
+        res = await client.post(
+            "https://api.kie.ai/api/v1/generate",
+            headers=headers,
+            json=body
+        )
+
     data = res.json()
-    
-    # Simpan data awal ke koleksi 'songs' dan 'global_songs'
+
+    # Simpan data awal ke Firestore
     if db and res.status_code == 200 and data.get("data"):
+
         task_id = data["data"].get("taskId")
+
         if task_id:
             song_data = {
                 "taskId": task_id,
                 "userId": payload.userId,
                 "title": payload.title or "Untitled",
-                "style": payload.style or "AI Music",
-                "lyrics": payload.prompt, # Simpan prompt sebagai lirik awal
+                "lyrics": payload.prompt,
                 "status": "processing",
                 "createdAt": int(time.time() * 1000)
             }
-            # Simpan ke koleksi pribadi dan global
+
             db.collection("songs").document(task_id).set(song_data, merge=True)
             db.collection("global_songs").document(task_id).set(song_data, merge=True)
 
     return data
 
+
 @app.get("/record-info/{task_id}")
 async def record_info(task_id: str):
-    """Endpoint untuk mengecek status lagu dari Android"""
+
     headers = {"Authorization": f"Bearer {SUNO_API_KEY}"}
     params = {"taskId": task_id}
-    
+
     async with httpx.AsyncClient(timeout=30) as client:
-        res = await client.get("https://api.kie.ai/api/v1/generate/record-info", headers=headers, params=params)
-    
+        res = await client.get(
+            "https://api.kie.ai/api/v1/generate/record-info",
+            headers=headers,
+            params=params
+        )
+
     if res.status_code != 200:
-        raise HTTPException(status_code=res.status_code, detail="Gagal mengambil info dari provider")
-        
+        raise HTTPException(
+            status_code=res.status_code,
+            detail="Gagal mengambil info dari provider"
+        )
+
     return res.json()
+
 
 @app.post("/callback")
 async def callback(request: Request):
+
     payload = await request.json()
-    print(f"CALLBACK RECEIVED: {payload}")
-    
+    print("CALLBACK RECEIVED:", payload)
+
     task_id = payload.get("taskId")
     items = payload.get("data", [])
-    
+
     if not items or not db:
         return {"status": "ignored"}
-    
+
     item = items[0]
-    # State bisa berupa 'succeeded' atau 'SUCCESS' tergantung provider
+
     state = str(item.get("state", "")).lower()
-    
+
     if state in ["succeeded", "success", "completed"]:
+
         audio_url = item.get("audioUrl") or item.get("streamAudioUrl")
+
         if audio_url:
-            # Opsional: Download file agar punya backup di server sendiri
+
             local_audio = save_file(audio_url, f"{task_id}.mp3")
-            
-            # Persiapkan data update lengkap
+
+            # 🔹 Ambil style otomatis dari API
+            style_value = (
+                item.get("style")
+                or item.get("tags")
+                or item.get("genre")
+                or "AI Music"
+            )
+
             update_data = {
                 "audioUrl": local_audio,
                 "imageUrl": item.get("imageUrl") or item.get("image_url"),
                 "duration": item.get("duration") or 0,
                 "lyrics": item.get("lyrics") or item.get("prompt"),
+                "style": style_value,
                 "status": "completed"
             }
-            
-            # Update di koleksi pribadi
+
             db.collection("songs").document(task_id).update(update_data)
-            # Update di koleksi global (Jelajah)
             db.collection("global_songs").document(task_id).update(update_data)
-            
-            print(f"✅ Task {task_id} marked as COMPLETED in Firestore")
+
+            print(f"✅ Task {task_id} COMPLETED + STYLE SAVED")
+
             return {"status": "success"}
-            
+
     return {"status": "processing"}
