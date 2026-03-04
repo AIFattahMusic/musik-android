@@ -1,5 +1,6 @@
 import os
 import uuid
+import asyncio
 import requests
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -21,15 +22,11 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ================= SUNO ENDPOINT =================
-
 SUNO_BASE_API = "https://api.kie.ai/api/v1"
 GENERATE_URL = f"{SUNO_BASE_API}/generate"
 STATUS_URL = f"{SUNO_BASE_API}/generate/record-info"
 
-# ================= APP =================
-
-app = FastAPI(title="AI Music API", version="3.0")
+app = FastAPI(title="AI Music Auto Save", version="4.0")
 
 # ================= MODEL =================
 
@@ -41,25 +38,18 @@ class GenerateMusicRequest(BaseModel):
     customMode: bool = False
     model: str = "V4_5"
 
-# ================= HELPER =================
-
 def suno_headers():
     return {
         "Authorization": f"Bearer {SUNO_API_KEY}",
         "Content-Type": "application/json"
     }
 
-# ================= ROUTES =================
+# ================= AUTO GENERATE + SAVE =================
 
-@app.get("/")
-def root():
-    return {"status": "running"}
+@app.post("/generate-music-auto")
+async def generate_music_auto(payload: GenerateMusicRequest):
 
-# -------- GENERATE MUSIC --------
-
-@app.post("/generate-music")
-async def generate_music(payload: GenerateMusicRequest):
-
+    # 1️⃣ Generate task
     body = {
         "prompt": payload.prompt,
         "customMode": payload.customMode,
@@ -73,71 +63,67 @@ async def generate_music(payload: GenerateMusicRequest):
         body["title"] = payload.title
 
     async with httpx.AsyncClient(timeout=60) as client:
-        res = await client.post(
+        gen_res = await client.post(
             GENERATE_URL,
             headers=suno_headers(),
             json=body
         )
 
-    if res.status_code != 200:
-        raise HTTPException(status_code=500, detail=res.text)
+    if gen_res.status_code != 200:
+        raise HTTPException(status_code=500, detail=gen_res.text)
 
-    return res.json()
+    gen_data = gen_res.json()
+    task_id = gen_data["data"]["taskId"]
 
-# -------- RECORD INFO + AUTO SAVE --------
+    # 2️⃣ Polling sampai selesai
+    for _ in range(30):  # max 30x polling
+        await asyncio.sleep(5)
 
-@app.get("/record-info/{task_id}")
-async def record_info(task_id: str):
-    try:
         async with httpx.AsyncClient(timeout=30) as client:
-            res = await client.get(
+            status_res = await client.get(
                 STATUS_URL,
                 headers=suno_headers(),
                 params={"taskId": task_id}
             )
 
-        data = res.json()
+        status_data = status_res.json()
 
-        # Ambil struktur sesuai kie.ai
-        suno_data = data["data"]["response"]["sunoData"][0]
+        try:
+            suno_data = status_data["data"]["response"]["sunoData"][0]
+            audio_url = suno_data.get("audioUrl")
+            state = suno_data.get("state")
 
-        audio_url = suno_data.get("audioUrl")
-        title = suno_data.get("title", "Untitled")
-        lyrics = suno_data.get("prompt", "")
-        artist = "AI Generator"
-        genre = "AI"
+            if state == "succeeded" and audio_url:
+                # 3️⃣ Download
+                audio_bytes = requests.get(audio_url).content
 
-        if not audio_url:
-            return {"status": "audio not ready", "data": data}
+                file_id = str(uuid.uuid4())
+                audio_path = f"songs/{file_id}.mp3"
 
-        # Generate unique filename
-        file_id = str(uuid.uuid4())
-        audio_path = f"songs/{file_id}.mp3"
+                # 4️⃣ Upload ke Supabase
+                supabase.storage.from_("music").upload(
+                    audio_path,
+                    audio_bytes,
+                    {"upsert": True}
+                )
 
-        # Download audio
-        audio_bytes = requests.get(audio_url).content
+                # 5️⃣ Insert DB
+                supabase.table("songs").insert({
+                    "title": suno_data.get("title", "Untitled"),
+                    "artist": "AI Generator",
+                    "genre": "AI",
+                    "lyrics": suno_data.get("prompt", ""),
+                    "audio_path": audio_path,
+                    "cover_path": None
+                }).execute()
 
-        # Upload ke Supabase Storage
-        supabase.storage.from_("music").upload(
-            audio_path,
-            audio_bytes,
-            {"upsert": True}
-        )
+                return {
+                    "status": "saved_to_supabase",
+                    "task_id": task_id,
+                    "audio_path": audio_path
+                }
 
-        # Insert ke database
-        supabase.table("songs").insert({
-            "title": title,
-            "artist": artist,
-            "genre": genre,
-            "lyrics": lyrics,
-            "audio_path": audio_path,
-            "cover_path": None
-        }).execute()
+        except:
+            pass
 
-        return {
-            "status": "saved_to_supabase",
-            "audio_path": audio_path
-        }
-
-    except Exception as e:
-        return {"error": str(e)}
+    return {"status": "timeout_waiting_for_audio", "task_id": task_id}
